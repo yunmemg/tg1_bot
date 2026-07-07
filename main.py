@@ -23,7 +23,7 @@ BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
 
 # 转发目标：可以是用户名（如 "myusername"）或数字 ID
 # 用户名不需要 @，直接写字符串即可
-TARGET = "yunmengwudibot"  # 例如 "myusername" 或 123456789
+TARGET = "yunmengdl_bot"  # 例如 "myusername" 或 123456789
 
 accounts = {}
 user_login_states = {}
