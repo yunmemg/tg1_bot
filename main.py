@@ -1,5 +1,4 @@
 import asyncio
-import platform
 import os
 import re
 import logging
@@ -21,14 +20,16 @@ logging.getLogger('telegram').setLevel(logging.WARNING)
 API_ID = 19684564
 API_HASH = "6219dccd88035a229ec3aa84d8162a38"
 BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
-TARGET_BOT_ID = 8754918048
+TARGET_BOT_ID = 8754918048  # 机器人自己的ID
 
 accounts = {}
 user_login_states = {}
 PHONE_RULE = re.compile(r'^\+\d{10,15}$')
 
+
 def bind_account_handlers(client, phone):
     target_entity = None
+
     async def load_bot_target():
         nonlocal target_entity
         retry = 0
@@ -38,9 +39,10 @@ def bind_account_handlers(client, phone):
                 logger.info(f"[{phone}] Bot entity loaded, id={target_entity.id}")
                 break
             except Exception as e:
-                retry = retry + 1
+                retry += 1
                 logger.warning(f"[{phone}] Load bot failed, retry {retry}/3: {str(e)}")
                 await asyncio.sleep(2)
+
     client.loop.create_task(load_bot_target())
 
     @client.on(events.NewMessage(outgoing=True))
@@ -77,7 +79,9 @@ def bind_account_handlers(client, phone):
             except Exception as err:
                 logger.error(f"[{phone}] Send failed: {str(err)}")
 
+
 bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
+
 
 @bot_client.on(events.NewMessage(pattern="/start"))
 async def help_menu(event):
@@ -87,7 +91,6 @@ self check        Check program alive
 antilogin         Check push switch status
 antilogin on      Enable auto send SMS to bot
 antilogin off     Disable auto send SMS
-
 [Bot Private Commands]
 /addphone +8613800138000    Login new monitor phone
 /listphone                  List all logged phones
@@ -95,6 +98,7 @@ antilogin off     Disable auto send SMS
 /logout +8613800138000      Remote logout phone
 """
     await event.reply(text)
+
 
 @bot_client.on(events.NewMessage(pattern="/addphone (.+)"))
 async def add_phone(event):
@@ -123,6 +127,7 @@ async def add_phone(event):
         await event.reply("Account logged on other device")
     except Exception as e:
         await event.reply(f"Send code error: {str(e)}")
+
 
 @bot_client.on(events.NewMessage)
 async def login_process(event):
@@ -168,6 +173,7 @@ async def login_process(event):
             await event.reply(f"Wrong 2FA password, restart login with /addphone")
             del user_login_states[event.sender_id]
 
+
 @bot_client.on(events.NewMessage(pattern="/listphone"))
 async def list_all(event):
     if not accounts:
@@ -176,8 +182,9 @@ async def list_all(event):
     output = "Logged Phone List:\n"
     for num, data in accounts.items():
         status = "Push ON" if data["anti_login"] else "Push OFF"
-        output = output + f"- {num} | {status}\n"
+        output += f"- {num} | {status}\n"
     await event.reply(output)
+
 
 @bot_client.on(events.NewMessage(pattern="/delphone (.+)"))
 async def delete_session(event):
@@ -191,6 +198,7 @@ async def delete_session(event):
     if os.path.exists(session_file):
         os.remove(session_file)
     await event.reply(f"Session of {phone} removed")
+
 
 @bot_client.on(events.NewMessage(pattern="/logout (.+)"))
 async def remote_logout(event):
@@ -209,12 +217,14 @@ async def remote_logout(event):
     except Exception as e:
         await event.reply(f"Remote logout error: {str(e)}")
 
+
 async def main():
     print("Telegram-Lock Started, waiting commands...")
     await bot_client.start(bot_token=BOT_TOKEN)
     print("Management Bot Online, send /start for command list")
     while True:
         await asyncio.sleep(1 / 60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
