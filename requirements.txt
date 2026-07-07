@@ -1,3 +1,2 @@
-p{
-  "startCommand": "python main.py"
-}
+pyrogram
+tgcrypto
