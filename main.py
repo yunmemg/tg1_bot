@@ -1,226 +1,218 @@
 import asyncio
 import json
 import os
-import threading
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from flask import Flask
 import config
 
-# Flask保活服务
-app_flask = Flask(__name__)
-@app_flask.route('/')
-def index():
-    return "Bot Running 24h"
+# 数据存储文件
+DATA_PATH = "data.json"
 
-def flask_run():
-    app_flask.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-# 启动保活线程
-threading.Thread(target=flask_run, daemon=True).start()
-
-DATA_FILE = "data.json"
-
-def load_data():
+# 读取数据
+def load_json():
     try:
-        with open(DATA_FILE, 'r', encoding="utf-8") as f:
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except Exception:
         return {"listeners": {}, "targets": []}
 
-def save_data(data):
-    with open(DATA_FILE, 'w', encoding="utf-8") as f:
+# 保存数据
+def save_json(data):
+    with open(DATA_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# 机器人客户端初始化
-bot_client = Client(
-    "bot_session",
-    config.API_ID,
-    config.API_HASH,
+# 主机器人实例
+bot = Client(
+    session_name="bot_main",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
     bot_token=config.BOT_TOKEN,
     ipv6=False
 )
-data = load_data()
-active_listeners = {}
 
-async def start_listener(phone):
-    if phone in active_listeners:
-        print(f"[{phone}] 监听已存在，无需重复启动")
+# 全局变量
+db = load_json()
+running_listen = {}
+
+# ====================== 监听账号启停函数 ======================
+async def start_phone_listen(phone_num: str):
+    if phone_num in running_listen:
+        print(f"[{phone_num}] 监听已在运行，跳过")
         return
-    session_name = data['listeners'][phone]['session']
-    session_path = f"{session_name}.session"
-    if not os.path.exists(session_path):
-        print(f"[{phone}] 会话文件不存在，跳过启动")
+    session_name = db["listeners"][phone_num]["session"]
+    session_file = f"{session_name}.session"
+    if not os.path.exists(session_file):
+        print(f"[{phone_num}] 会话文件丢失，无法启动")
         return
-        
-    listen_client = Client(
+
+    # 创建监听客户端
+    listen_cli = Client(
         session_name,
         config.API_ID,
         config.API_HASH,
         ipv6=False
     )
 
-    @listen_client.on_message(filters.user(777000) & filters.private)
-    async def sms_handler(_, message):
-        print(f"[{phone}] 收到验证码：{message.text}")
-        for target_id in data['targets']:
+    # 捕获官方短信Bot 777000发来的验证码
+    @listen_cli.on_message(filters.user(777000) & filters.private)
+    async def catch_code(_, msg: Message):
+        print(f"[{phone_num}] 收到验证码：{msg.text}")
+        # 批量转发所有绑定用户
+        for user_id in db["targets"]:
             try:
-                await bot_client.send_message(target_id, f"📨 验证码 ({phone}):\n{message.text}")
-                print(f"[{phone}] 成功转发至 {target_id}")
+                await bot.send_message(user_id, f"📩 手机号 {phone_num}\n验证码：{msg.text}")
+                print(f"[{phone_num}] 转发至 {user_id} 成功")
             except Exception as e:
-                print(f"[{phone}] 转发目标 {target_id} 失败: {str(e)}")
+                print(f"[{phone_num}] 转发 {user_id} 失败：{str(e)}")
 
-    await listen_client.start()
-    active_listeners[phone] = listen_client
-    print(f"✅ {phone} 监听已开启，等待短信...")
+    await listen_cli.start()
+    running_listen[phone_num] = listen_cli
+    print(f"✅ [{phone_num}] 监听启动完成")
 
-async def stop_listener(phone):
-    if phone in active_listeners:
-        try:
-            await active_listeners[phone].stop()
-        except Exception as e:
-            print(f"[{phone}] 关闭监听异常: {str(e)}")
-        del active_listeners[phone]
-        print(f"⏸ {phone} 监听已关闭")
-
-@bot_client.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    help_text = (
-        "🤖 验证码转发机器人已启动！\n\n"
-        "命令列表：\n"
-        "/add_listener - 添加监听号码\n"
-        "/toggle +86xxx - 开关监听\n"
-        "/list - 查看所有号码\n"
-        "/del +86xxx - 删除号码\n"
-        "/add_target 用户ID - 添加转发目标\n"
-        "/list_targets - 查看转发目标"
-    )
-    await message.reply_text(help_text)
-
-@bot_client.on_message(filters.command("add_listener") & filters.private)
-async def add_listener(client, message):
-    await message.reply("📱 请发送手机号（国际格式，如 +8613812345678）：")
-    try:
-        phone_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
-    except asyncio.TimeoutError:
-        await message.reply("⏱ 等待输入超时，请重新执行 /add_listener")
+async def stop_phone_listen(phone_num: str):
+    if phone_num not in running_listen:
         return
-        
-    phone = phone_msg.text.strip()
-    if phone in data['listeners']:
-        return await message.reply("⚠️ 该号码已存在，请勿重复添加。")
-    
-    session_name = f"listener_{phone}"
-    new_client = Client(
-        session_name,
-        config.API_ID,
-        config.API_HASH,
-        ipv6=False
-    )
-    
     try:
-        sent_code = await new_client.send_code(phone)
-        await message.reply(f"✅ 验证码已发送至 {phone}，请回复短信内数字验证码：")
+        await running_listen[phone_num].stop()
+    except Exception as e:
+        print(f"[{phone_num}] 关闭监听异常：{str(e)}")
+    del running_listen[phone_num]
+    print(f"⏹ [{phone_num}] 监听已关闭")
+
+# ====================== 机器人指令 ======================
+@bot.on_message(filters.command("start") & filters.private)
+async def cmd_start(_, msg: Message):
+    help_text = """🤖 验证码转发机器人 指令大全
+/add_listener  添加新的监听手机号
+/toggle +8613800000000  开启/关闭该号码监听
+/list  查看全部监听号码状态
+/del +8613800000000  删除号码并清除会话
+/add_target 123456789  添加接收验证码的用户ID
+/list_targets  查看所有接收ID"""
+    await msg.reply_text(help_text)
+
+@bot.on_message(filters.command("add_listener") & filters.private)
+async def cmd_add(_, msg: Message):
+    await msg.reply("📱 请发送手机号（完整国际格式，例：+8613362553093）")
+    # 等待用户输入手机号
+    try:
+        phone_msg = await bot.wait_for_message(chat_id=msg.chat.id, timeout=120)
+    except asyncio.TimeoutError:
+        await msg.reply("⏱ 等待超时，请重新执行 /add_listener")
+        return
+    phone = phone_msg.text.strip()
+    if phone in db["listeners"]:
+        return await msg.reply("⚠️ 该手机号已存在，无需重复添加")
+    
+    session_name = f"listen_{phone}"
+    temp_cli = Client(session_name, config.API_ID, config.API_HASH, ipv6=False)
+    try:
+        # 请求登录验证码
+        code_data = await temp_cli.send_code(phone)
+        await msg.reply(f"✅ 验证码已下发至 {phone}，请回复收到的数字验证码")
+        # 等待用户输入验证码
         try:
-            code_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
+            code_input = await bot.wait_for_message(chat_id=msg.chat.id, timeout=120)
         except asyncio.TimeoutError:
-            await message.reply("⏱ 验证码输入超时，请重新发起添加")
+            await msg.reply("⏱ 验证码输入超时，本次添加终止")
             if os.path.exists(f"{session_name}.session"):
                 os.remove(f"{session_name}.session")
             return
-            
-        code = code_msg.text.strip()
-        await new_client.sign_in(phone, sent_code.phone_code_hash, code)
-        await new_client.stop()
-        
-        data['listeners'][phone] = {"session": session_name, "enabled": True}
-        save_data(data)
-        await start_listener(phone)
-        await message.reply(f"🎉 {phone} 添加成功，监听已开启！执行 /list 可查看")
-    except Exception as e:
-        await message.reply(f"❌ 登录失败：{str(e)}")
+        code = code_input.text.strip()
+        # 完成登录保存会话
+        await temp_cli.sign_in(phone, code_data.phone_code_hash, code)
+        await temp_cli.stop()
+        # 写入数据库
+        db["listeners"][phone] = {"session": session_name, "enabled": True}
+        save_json(db)
+        # 自动启动监听
+        await start_phone_listen(phone)
+        await msg.reply(f"🎉 {phone} 添加成功，监听已自动开启！发送 /list 查看")
+    except Exception as err:
+        await msg.reply(f"❌ 登录失败：{str(err)}")
         if os.path.exists(f"{session_name}.session"):
             os.remove(f"{session_name}.session")
 
-@bot_client.on_message(filters.command("toggle") & filters.private)
-async def toggle_listener(client, message):
-    parts = message.text.split()
-    if len(parts) != 2:
-        return await message.reply("用法：/toggle +8613812345678")
-    phone = parts[1]
-    if phone not in data['listeners']:
-        return await message.reply("❌ 未找到该号码，请先执行 /add_listener 添加")
-    
-    current_state = data['listeners'][phone]['enabled']
+@bot.on_message(filters.command("toggle") & filters.private)
+async def cmd_toggle(_, msg: Message):
+    args = msg.text.split()
+    if len(args) != 2:
+        return await msg.reply("❌ 用法示例：/toggle +8613362553093")
+    phone = args[1]
+    if phone not in db["listeners"]:
+        return await msg.reply("❌ 未查询到此号码，请先执行 /add_listener 添加")
+    # 切换启用状态
+    current_state = db["listeners"][phone]["enabled"]
     new_state = not current_state
-    data['listeners'][phone]['enabled'] = new_state
-    save_data(data)
-    
+    db["listeners"][phone]["enabled"] = new_state
+    save_json(db)
     if new_state:
-        await start_listener(phone)
-        await message.reply(f"✅ {phone} 已开启转发")
+        await start_phone_listen(phone)
+        await msg.reply(f"✅ {phone} 监听已开启")
     else:
-        await stop_listener(phone)
-        await message.reply(f"⏸ {phone} 已关闭转发")
+        await stop_phone_listen(phone)
+        await msg.reply(f"⏹ {phone} 监听已关闭")
 
-@bot_client.on_message(filters.command("list") & filters.private)
-async def list_listeners(client, message):
-    if not data['listeners']:
-        return await message.reply("📭 尚未添加任何监听号码，请先执行 /add_listener")
+@bot.on_message(filters.command("list") & filters.private)
+async def cmd_list(_, msg: Message):
+    if not db["listeners"]:
+        return await msg.reply("📭 暂无任何监听号码，请执行 /add_listener 添加")
     text = "📋 监听号码列表：\n"
-    for phone, info in data['listeners'].items():
-        status = "🟢 开启" if info['enabled'] else "🔴 关闭"
-        text += f"- {phone} ({status})\n"
-    await message.reply(text)
+    for phone, info in db["listeners"].items():
+        status = "🟢 运行中" if info["enabled"] else "🔴 已关闭"
+        text += f"- {phone} | {status}\n"
+    await msg.reply(text)
 
-@bot_client.on_message(filters.command("del") & filters.private)
-async def del_listener(client, message):
-    parts = message.text.split()
-    if len(parts) != 2:
-        return await message.reply("用法：/del +8613812345678")
-    phone = parts[1]
-    if phone in data['listeners']:
-        await stop_listener(phone)
-        session_path = f"{data['listeners'][phone]['session']}.session"
-        if os.path.exists(session_path):
-            os.remove(session_path)
-        del data['listeners'][phone]
-        save_data(data)
-        await message.reply(f"🗑 {phone} 已彻底删除")
-    else:
-        await message.reply("❌ 未找到该号码")
+@bot.on_message(filters.command("del") & filters.private)
+async def cmd_del(_, msg: Message):
+    args = msg.text.split()
+    if len(args) != 2:
+        return await msg.reply("❌ 用法示例：/del +8613362553093")
+    phone = args[1]
+    if phone not in db["listeners"]:
+        return await msg.reply("❌ 未找到该号码")
+    # 停止监听+删除会话文件
+    await stop_phone_listen(phone)
+    session_file = f"{db['listeners'][phone]['session']}.session"
+    if os.path.exists(session_file):
+        os.remove(session_file)
+    # 删除数据库记录
+    del db["listeners"][phone]
+    save_json(db)
+    await msg.reply(f"🗑 {phone} 已彻底删除，会话文件已清理")
 
-@bot_client.on_message(filters.command("add_target") & filters.private)
-async def add_target(client, message):
-    parts = message.text.split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        return await message.reply("用法：/add_target <用户ID>\n获取ID请搜索 @userinfobot")
-    target = int(parts[1])
-    if target not in data['targets']:
-        data['targets'].append(target)
-        save_data(data)
-        await message.reply(f"✅ 已添加转发目标 {target}")
-    else:
-        await message.reply("⚠️ 该目标已存在")
+@bot.on_message(filters.command("add_target") & filters.private)
+async def cmd_add_target(_, msg: Message):
+    args = msg.text.split()
+    if len(args) != 2 or not args[1].isdigit():
+        return await msg.reply("❌ 用法：/add_target 你的数字ID\n获取ID搜索 @userinfobot")
+    target_id = int(args[1])
+    if target_id in db["targets"]:
+        return await msg.reply("⚠️ 该接收ID已存在")
+    db["targets"].append(target_id)
+    save_json(db)
+    await msg.reply(f"✅ 成功添加接收ID：{target_id}")
 
-@bot_client.on_message(filters.command("list_targets") & filters.private)
-async def list_targets(client, message):
-    if data['targets']:
-        text = "📋 转发目标列表：\n" + "\n".join(map(str, data['targets']))
-        await message.reply(text)
-    else:
-        await message.reply("📭 暂无转发目标，请执行 /add_target 绑定你的ID")
+@bot.on_message(filters.command("list_targets") & filters.private)
+async def cmd_list_targets(_, msg: Message):
+    if not db["targets"]:
+        return await msg.reply("📭 暂无接收验证码的用户ID，请执行 /add_target")
+    text = "📋 验证码接收目标ID列表：\n" + "\n".join(map(str, db["targets"]))
+    await msg.reply(text)
 
+# ====================== 程序入口 ======================
 async def main():
-    await bot_client.start()
-    print("🤖 机器人主程序已启动！保活网页已开启，不会自动休眠")
-    for phone, info in data['listeners'].items():
-        if info['enabled']:
+    await bot.start()
+    print("🤖 主机器人启动成功！")
+    # 程序启动时自动恢复所有开启的监听
+    for phone, info in db["listeners"].items():
+        if info["enabled"]:
             try:
-                await start_listener(phone)
+                await start_phone_listen(phone)
             except Exception as e:
-                print(f"启动 {phone} 监听失败: {str(e)}")
-    await bot_client.idle()
+                print(f"启动 {phone} 监听失败：{str(e)}")
+    # 兼容所有Pyrogram版本，稳定常驻不闪退
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
