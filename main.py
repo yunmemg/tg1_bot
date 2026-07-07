@@ -3,6 +3,7 @@ import json
 import os
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import TimeoutError
 import config
 
 DATA_FILE = "data.json"
@@ -64,7 +65,13 @@ async def start_cmd(client, message):
 @bot_client.on_message(filters.command("add_listener") & filters.private)
 async def add_listener(client, message):
     await message.reply("📱 请发送手机号（国际格式，如 +8613812345678）：")
-    phone_msg = await client.ask(message.chat.id, timeout=120)
+    # 原 client.ask 替换为原生 wait_for_message
+    try:
+        phone_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
+    except TimeoutError:
+        await message.reply("⏱ 等待输入超时，请重新执行 /add_listener")
+        return
+        
     phone = phone_msg.text.strip()
     
     if phone in data['listeners']:
@@ -81,7 +88,15 @@ async def add_listener(client, message):
     try:
         sent_code = await new_client.send_code(phone)
         await message.reply(f"✅ 验证码已发送至 {phone}，请回复验证码：")
-        code_msg = await client.ask(message.chat.id, timeout=120)
+        # 第二处 client.ask 替换
+        try:
+            code_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
+        except TimeoutError:
+            await message.reply("⏱ 验证码输入超时，请重新发起添加")
+            if os.path.exists(f"{session_name}.session"):
+                os.remove(f"{session_name}.session")
+            return
+            
         code = code_msg.text.strip()
         
         await new_client.sign_in(phone, sent_code.phone_code_hash, code)
