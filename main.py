@@ -1,9 +1,23 @@
 import asyncio
 import json
 import os
+import threading
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from flask import Flask
 import config
+
+# Flask保活服务
+app_flask = Flask(__name__)
+@app_flask.route('/')
+def index():
+    return "Bot Running 24h"
+
+def flask_run():
+    app_flask.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
+# 启动保活线程
+threading.Thread(target=flask_run, daemon=True).start()
 
 DATA_FILE = "data.json"
 
@@ -105,10 +119,8 @@ async def add_listener(client, message):
     )
     
     try:
-        # 发送验证码
         sent_code = await new_client.send_code(phone)
         await message.reply(f"✅ 验证码已发送至 {phone}，请回复短信内数字验证码：")
-        # 等待用户输入验证码
         try:
             code_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
         except asyncio.TimeoutError:
@@ -118,11 +130,9 @@ async def add_listener(client, message):
             return
             
         code = code_msg.text.strip()
-        # 登录账号
         await new_client.sign_in(phone, sent_code.phone_code_hash, code)
         await new_client.stop()
         
-        # 写入数据并保存
         data['listeners'][phone] = {"session": session_name, "enabled": True}
         save_data(data)
         await start_listener(phone)
@@ -203,15 +213,13 @@ async def list_targets(client, message):
 
 async def main():
     await bot_client.start()
-    print("🤖 机器人主程序已启动！")
-    # 自动恢复所有启用的监听
+    print("🤖 机器人主程序已启动！保活网页已开启，不会自动休眠")
     for phone, info in data['listeners'].items():
         if info['enabled']:
             try:
                 await start_listener(phone)
             except Exception as e:
                 print(f"启动 {phone} 监听失败: {str(e)}")
-    # Pyrogram官方稳定常驻，不会无故退出容器
     await bot_client.idle()
 
 if __name__ == "__main__":
