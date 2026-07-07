@@ -31,8 +31,14 @@ active_listeners = {}
 
 async def start_listener(phone):
     if phone in active_listeners:
+        print(f"[{phone}] 监听已存在，无需重复启动")
         return
     session_name = data['listeners'][phone]['session']
+    session_path = f"{session_name}.session"
+    if not os.path.exists(session_path):
+        print(f"[{phone}] 会话文件不存在，跳过启动")
+        return
+        
     listen_client = Client(
         session_name,
         config.API_ID,
@@ -40,18 +46,19 @@ async def start_listener(phone):
         ipv6=False
     )
 
-    # 监听官方短信 Bot 777000 消息
     @listen_client.on_message(filters.user(777000) & filters.private)
     async def sms_handler(_, message):
+        print(f"[{phone}] 收到验证码：{message.text}")
         for target_id in data['targets']:
             try:
                 await bot_client.send_message(target_id, f"📨 验证码 ({phone}):\n{message.text}")
+                print(f"[{phone}] 成功转发至 {target_id}")
             except Exception as e:
                 print(f"[{phone}] 转发目标 {target_id} 失败: {str(e)}")
 
     await listen_client.start()
     active_listeners[phone] = listen_client
-    print(f"✅ {phone} 监听已开启")
+    print(f"✅ {phone} 监听已开启，等待短信...")
 
 async def stop_listener(phone):
     if phone in active_listeners:
@@ -98,8 +105,10 @@ async def add_listener(client, message):
     )
     
     try:
+        # 发送验证码
         sent_code = await new_client.send_code(phone)
-        await message.reply(f"✅ 验证码已发送至 {phone}，请回复验证码：")
+        await message.reply(f"✅ 验证码已发送至 {phone}，请回复短信内数字验证码：")
+        # 等待用户输入验证码
         try:
             code_msg = await client.wait_for_message(chat_id=message.chat.id, timeout=120)
         except asyncio.TimeoutError:
@@ -109,13 +118,15 @@ async def add_listener(client, message):
             return
             
         code = code_msg.text.strip()
+        # 登录账号
         await new_client.sign_in(phone, sent_code.phone_code_hash, code)
         await new_client.stop()
         
+        # 写入数据并保存
         data['listeners'][phone] = {"session": session_name, "enabled": True}
         save_data(data)
         await start_listener(phone)
-        await message.reply(f"🎉 {phone} 添加成功，监听已开启！")
+        await message.reply(f"🎉 {phone} 添加成功，监听已开启！执行 /list 可查看")
     except Exception as e:
         await message.reply(f"❌ 登录失败：{str(e)}")
         if os.path.exists(f"{session_name}.session"):
@@ -128,7 +139,7 @@ async def toggle_listener(client, message):
         return await message.reply("用法：/toggle +8613812345678")
     phone = parts[1]
     if phone not in data['listeners']:
-        return await message.reply("❌ 未找到该号码")
+        return await message.reply("❌ 未找到该号码，请先执行 /add_listener 添加")
     
     current_state = data['listeners'][phone]['enabled']
     new_state = not current_state
@@ -145,7 +156,7 @@ async def toggle_listener(client, message):
 @bot_client.on_message(filters.command("list") & filters.private)
 async def list_listeners(client, message):
     if not data['listeners']:
-        return await message.reply("📭 尚未添加任何监听号码")
+        return await message.reply("📭 尚未添加任何监听号码，请先执行 /add_listener")
     text = "📋 监听号码列表：\n"
     for phone, info in data['listeners'].items():
         status = "🟢 开启" if info['enabled'] else "🔴 关闭"
@@ -188,7 +199,7 @@ async def list_targets(client, message):
         text = "📋 转发目标列表：\n" + "\n".join(map(str, data['targets']))
         await message.reply(text)
     else:
-        await message.reply("📭 暂无转发目标")
+        await message.reply("📭 暂无转发目标，请执行 /add_target 绑定你的ID")
 
 async def main():
     await bot_client.start()
@@ -200,9 +211,8 @@ async def main():
                 await start_listener(phone)
             except Exception as e:
                 print(f"启动 {phone} 监听失败: {str(e)}")
-    # 持续运行
-    await asyncio.Event().wait()
+    # Pyrogram官方稳定常驻，不会无故退出容器
+    await bot_client.idle()
 
 if __name__ == "__main__":
-    # 适配新版 asyncio，统一入口
     asyncio.run(main())
