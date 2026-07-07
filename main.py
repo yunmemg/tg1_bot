@@ -4,7 +4,7 @@ import os
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# 密钥直接写在文件内，不需要config.py
+# 内置密钥，无需config.py
 API_ID = 19684564
 API_HASH = "6219dccd88035a229ec3aa84d8162a38"
 BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
@@ -12,7 +12,7 @@ BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
 DATA_FILE = "data.json"
 SMS_BOT_ID = 777000
 
-# 数据读写工具
+# 数据读写
 def load_storage():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -24,7 +24,7 @@ def save_storage(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# 主机器人客户端，修正参数 ipv6_disabled=True
+# 主机器人
 bot = Client(
     session_name="bot_main_session",
     api_id=API_ID,
@@ -78,7 +78,7 @@ async def stop_phone_sms_listener(phone_number: str):
     del running_listen_clients[phone_number]
     print(f"[STOP] {phone_number} 监听已关闭")
 
-# 指令：/start
+# /start 帮助指令
 @bot.on_message(filters.command("start") & filters.private)
 async def cmd_help(_, msg: Message):
     help_text = """🤖 验证码转发机器人
@@ -90,7 +90,7 @@ async def cmd_help(_, msg: Message):
 /list_targets    查看接收ID列表"""
     await msg.reply_text(help_text)
 
-# 指令：/add_listener
+# 添加手机号
 @bot.on_message(filters.command("add_listener") & filters.private)
 async def cmd_add_phone(_, msg: Message):
     await msg.reply("📱 发送完整手机号，示例：+8613362553093")
@@ -128,7 +128,7 @@ async def cmd_add_phone(_, msg: Message):
         if os.path.exists(f"{session_file_name}.session"):
             os.remove(f"{session_file_name}.session")
 
-# /toggle
+# 开关监听
 @bot.on_message(filters.command("toggle") & filters.private)
 async def cmd_toggle(_, msg: Message):
     param = msg.text.split()
@@ -150,7 +150,7 @@ async def cmd_toggle(_, msg: Message):
         await stop_phone_sms_listener(target_phone)
         await msg.reply(f"⏹ {target_phone} 监听已关闭")
 
-# /list
+# 列出所有号码
 @bot.on_message(filters.command("list") & filters.private)
 async def cmd_list_phone(_, msg: Message):
     if not storage["listeners"]:
@@ -162,7 +162,7 @@ async def cmd_list_phone(_, msg: Message):
         output_text += f"- {phone} | {status_tag}\n"
     await msg.reply_text(output_text)
 
-# /del
+# 删除号码
 @bot.on_message(filters.command("del") & filters.private)
 async def cmd_delete_phone(_, msg: Message):
     param = msg.text.split()
@@ -181,7 +181,7 @@ async def cmd_delete_phone(_, msg: Message):
     save_storage(storage)
     await msg.reply(f"🗑 {target_phone} 已彻底删除")
 
-# /add_target
+# 添加接收ID
 @bot.on_message(filters.command("add_target") & filters.private)
 async def cmd_add_target(_, msg: Message):
     param = msg.text.split()
@@ -196,5 +196,24 @@ async def cmd_add_target(_, msg: Message):
     save_storage(storage)
     await msg.reply(f"✅ 绑定接收ID：{target_uid}")
 
-# /list_targets
-@bot.on_message(filters.command("list_targets") & filters.privat
+# 查看接收ID列表
+@bot.on_message(filters.command("list_targets") & filters.private)
+async def cmd_list_target(_, msg: Message):
+    if not storage["target_users"]:
+         await msg.reply("📭 暂无接收验证码用户ID")
+         return
+     text = "📋 接收ID列表：\n" + "\n".join(map(str, storage["target_users"]))
+     await msg.reply(text)
+ # 程序入口
+ async def main():
+     await bot.start()
+     print("🤖 主机器人启动完成，等待指令...")
+     for phone, info in storage["listeners"].items():
+         if info["enabled"]:
+             try:
+                 await start_phone_sms_listener(phone)
+             except Exception as err:
+                 print(f"[WARN] 开机启动 {phone} 失败：{str(err)}")
+     await asyncio.Event().wait()
+ if __name__ == "__main__":
+     asyncio.run(main())
