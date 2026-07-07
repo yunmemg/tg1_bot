@@ -23,7 +23,7 @@ logging.getLogger('telegram').setLevel(logging.WARNING)
 API_ID = 19684564
 API_HASH = "6219dccd88035a229ec3aa84d8162a38"
 BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
-FORWARD_TARGET_BOT = "102466844"
+FORWARD_TARGET_BOT = "8754918048"
 
 # Global storage
 accounts = {}
