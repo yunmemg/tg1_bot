@@ -13,7 +13,7 @@ from telethon.errors import (
     AuthKeyDuplicatedError,
     FloodWaitError,
 )
-from telethon.tl.functions.account import ResetAuthorizationsRequest
+from telethon.tl.functions.account import ResetAuthorizationRequest, GetAuthorizationsRequest
 from telethon.tl.functions.auth import SendCodeRequest
 from telethon.tl.types import CodeSettings
 
@@ -91,10 +91,37 @@ async def invalidate_code(client: TelegramClient, phone: str) -> bool:
 
 
 async def kick_all_sessions(client: TelegramClient, phone: str) -> bool:
-    """一键终止所有其他设备会话。"""
+    """终止所有其他设备会话，兼容不同 Telethon 版本。"""
+    # 先尝试一键终止所有其他会话（新版本API）
     try:
+        from telethon.tl.functions.account import ResetAuthorizationsRequest
         await client(ResetAuthorizationsRequest())
-        logger.warning(f"[{phone}] 已终止所有其他设备会话")
+        logger.warning(f"[{phone}] 已一键终止所有其他设备会话")
+        return True
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.info(f"[{phone}] 一键终止失败，改用逐个终止: {str(e)}")
+
+    # 降级：逐个终止所有非当前会话
+    try:
+        result = await client(GetAuthorizationsRequest())
+        count = 0
+        current_hash = None
+        for auth in result.authorizations:
+            if getattr(auth, "current", False):
+                current_hash = auth.hash
+                break
+        if current_hash is None and result.authorizations:
+            current_hash = result.authorizations[0].hash
+        for auth in result.authorizations:
+            if auth.hash != current_hash:
+                try:
+                    await client(ResetAuthorizationRequest(hash=auth.hash))
+                    count += 1
+                except Exception:
+                    pass
+        logger.warning(f"[{phone}] 逐个终止完成，共下线 {count} 个设备")
         return True
     except Exception as e:
         logger.error(f"[{phone}] 终止会话失败: {str(e)}")
