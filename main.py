@@ -116,8 +116,9 @@ async def start_phone_client(phone, user_id):
         code = match.group(1)
         logger.info(f"[{phone}] 捕获验证码: {code}")
 
+        # 获取设备列表（新版调用）
         try:
-            auths = await client(GetAuthorizations())
+            auths = await client(GetAuthorizationsRequest())
         except Exception as e:
             logger.error(f"[{phone}] 获取设备列表失败: {e}")
             await bot.send_message(user_id, f"⚠️ 无法获取设备列表，请手动检查。\n{phone}")
@@ -140,8 +141,9 @@ async def start_phone_client(phone, user_id):
             return
 
         device_name = untrusted[0]["id"]
+        # 作废验证码（新版调用）
         try:
-            await client(InvalidateSignInCodes(codes=[code]))
+            await client(InvalidateSignInCodesRequest(codes=[code]))
             logger.info(f"[{phone}] 验证码 {code} 已作废")
             status = "blocked"
         except Exception as e:
@@ -420,5 +422,5 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    logger.info("🤖 反登录机器人 (白名单版) 启动中...")
+    logger.info("🤖 反登录机器人 (白名单版, 适配新版Telethon) 启动中...")
     asyncio.run(main())
