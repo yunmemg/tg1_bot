@@ -1,415 +1,424 @@
+# -*- coding: utf-8 -*-
 import asyncio
-import platform
+import json
 import os
 import re
 import logging
+from datetime import datetime
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.errors import (
-    SessionPasswordNeededError,
-    PhoneCodeInvalidError,
-    PhoneNumberInvalidError,
-    AuthKeyDuplicatedError,
-    FloodWaitError,
-    AuthRestartError # 导入 AuthRestartError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.account import GetAuthorizations, InvalidateSignInCodes
+import config
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-logging.basicConfig(level=logging.INFO) # 将日志级别改为 INFO，以便看到更多信息
 logger = logging.getLogger(__name__)
-logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
-logging.getLogger('telegram').setLevel(logging.WARNING)
 
-API_ID = 19684564
-API_HASH = "6219dccd88035a229ec3aa84d8162a38"
-BOT_TOKEN = "8754918048:AAEKWN7fBUZalgJpI3yJC31tc7wo6KFsp_Q"
-TARGET_BOT_ID =8754918048
-# 此处替换为你的群组ID，格式-100xxxxxxx
-GROUP_CHAT_ID =-5259247005
+os.makedirs(config.SESSIONS_DIR, exist_ok=True)
 
-accounts = {}
-user_login_states = {}
-lock_mode = {}
-auto_invalidate_mode = {}
-PHONE_RULE = re.compile(r'^\+\d{10,15}$')
+# ========== 数据管理 ==========
+def load_accounts():
+    if os.path.exists(config.ACCOUNTS_FILE):
+        with open(config.ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
-def bind_account_handlers(client, phone):
-    target_entity = None
+def save_accounts(accounts):
+    with open(config.ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(accounts, f, ensure_ascii=False, indent=2)
 
-    async def load_bot_target():
-        nonlocal target_entity
-        retry = 0
-        while retry < 3:
-            try:
-                if GROUP_CHAT_ID:
-                    target_entity = await client.get_entity(GROUP_CHAT_ID)
-                else:
-                    target_entity = await client.get_entity(TARGET_BOT_ID)
-                logger.info(f"[{phone}] Message target loaded")
-                break
-            except Exception as e:
-                retry = retry + 1
-                logger.warning(f"[{phone}] Load target fail retry {retry}: {str(e)}")
-                await asyncio.sleep(2)
-
-    client.loop.create_task(load_bot_target())
-
-    @client.on(events.NewMessage(outgoing=True))
-    async def alive_test(event):
-        if event.message.text and event.message.text.lower() == "self check":
-            await event.edit("self checked!")
-
-    @client.on(events.NewMessage(outgoing=True, pattern="antilogin$"))
-    async def query_status(event):
-        stat = "on" if accounts[phone]["anti_login"] else "off"
-        await event.edit(f"Anti-login push status: {stat}")
-
-    @client.on(events.NewMessage(outgoing=True, pattern="antilogin on$"))
-    async def enable_push(event):
-        accounts[phone]["anti_login"] = True
-        await event.edit("Auto verification push enabled.")
-
-    @client.on(events.NewMessage(outgoing=True, pattern="antilogin off$"))
-    async def disable_push(event):
-        accounts[phone]["anti_login"] = False
-        await event.edit("Auto verification push disabled.")
-
-    @client.on(events.NewMessage(from_users=[777000]))
-    async def capture_code(event):
-        logger.info(f"[{phone}] Received SMS code from 777000.")
-        
-        # 检查是否启用了自动失效模式
-        if auto_invalidate_mode.get(phone, False):
-            try:
-                # 重新发送验证码请求，使旧验证码失效
-                await client.send_code_request(phone)
-                alert_msg = f"⚠️ **安全警报** ⚠️\n检测到账号 {phone} 收到登录验证码，已自动重新申请验证码，**旧验证码已失效**！"
-                if target_entity:
-                    await client.send_message(target_entity, alert_msg)
-                else:
-                    logger.warning(f"[{phone}] 无法发送安全警报，因为 target_entity 未加载或 GROUP_CHAT_ID/TARGET_BOT_ID 未设置。")
-                logger.info(f"[{phone}] 已自动重新申请验证码，旧验证码已失效。")
-            except Exception as err:
-                logger.error(f"[{phone}] 自动重新申请验证码失败: {repr(err)}")
-                alert_msg = f"⚠️ **安全警报** ⚠️\n检测到账号 {phone} 收到登录验证码，但自动重新申请验证码失败: {repr(err)}。请手动检查账号安全！"
-                if target_entity:
-                    await client.send_message(target_entity, alert_msg)
-        elif accounts[phone]["anti_login"] and target_entity is not None:
-            try:
-                msg = f"Source Phone: {phone}\nCode Content:\n{event.message.text}"
-                await client.send_message(target_entity, msg)
-                logger.info(f"[{phone}] Code forwarded successfully")
-            except Exception as err:
-                logger.error(f"[{phone}] Forward error: {repr(err)}")
-
-bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
-
-@bot_client.on(events.NewMessage(pattern="/start"))
-async def help_menu(event):
-    text = """Command List
-[Phone Side Commands]
-self check        Check program alive
-antilogin         Check push switch
-antilogin on      Enable auto send SMS to bot/group
-antilogin off     Disable auto send SMS
-
-[Bot Control Commands]
-/addphone +8613800138000    Bind monitor phone account
-/listphone                  View all bound phones
-/delphone +8613800138000    Delete stored session file
-/logout +8613800138000      Remote logout online session
-/lock +8613800138000        Turn on anti-hijack login lock mode
-/autoinvalidate +8613800138000 on/off  Enable/Disable auto invalidate code mode
-/code +8613800138000 12345 Consume one-time verification code
-"""
-    await event.reply(text)
-
-@bot_client.on(events.NewMessage(pattern=r"^/addphone (\S+)$"))
-async def add_phone(event):
-    phone = event.pattern_match.group(1).strip()
-    if not PHONE_RULE.match(phone):
-        await event.reply("Invalid phone format, example: /addphone +8613800138000")
-        return
-    if phone in accounts:
-        await event.reply("This phone number already bound")
-        return
-
-    session_name = f"session_{phone.replace('+', '')}"
-    new_client = TelegramClient(session_name, API_ID, API_HASH)
-    try:
-        await new_client.connect()
-        code_req = await new_client.send_code_request(phone)
-        user_login_states[event.sender_id] = {
-            "client": new_client,
-            "phone": phone,
-            "code_hash": code_req.phone_code_hash,
-            "step": "input_sms_code"
-        }
-        accounts[phone] = {"client": new_client, "anti_login": False}
-        lock_mode[phone] = False # 初始化 lock_mode
-        auto_invalidate_mode[phone] = False # 初始化 auto_invalidate_mode
-        await event.reply(f"Code sent to {phone}, reply numeric sms code to finish login")
-    except PhoneNumberInvalidError:
-        await event.reply("Wrong phone number format")
-    except AuthKeyDuplicatedError:
-        await event.reply("Account already logged on another device")
-    except Exception as e:
-        await event.reply(f"Request error: {str(e)}")
-
-@bot_client.on(events.NewMessage(pattern=r"^/lock (\S+)$"))
-async def enable_lock_mode(event):
-    phone = event.pattern_match.group(1).strip()
-    if phone not in accounts:
-        await event.reply("Phone not bound, run /addphone first")
-        return
-    lock_mode[phone] = True
-    await event.reply(f"Login lock activated for {phone}, submit code via /code command to invalidate tokens")
-
-@bot_client.on(events.NewMessage(pattern=r"^/autoinvalidate (\S+) (on|off)$"))
-async def set_auto_invalidate_mode(event):
-    phone = event.pattern_match.group(1).strip()
-    status = event.pattern_match.group(2).strip().lower()
-
-    if phone not in accounts:
-        await event.reply("Phone not bound, run /addphone first")
-        return
-    
-    if status == "on":
-        auto_invalidate_mode[phone] = True
-        await event.reply(f"账号 {phone} 的自动验证码失效模式已 **开启**。当检测到登录验证码时，将自动重新申请以使其失效并发送警报。")
-    else:
-        auto_invalidate_mode[phone] = False
-        await event.reply(f"账号 {phone} 的自动验证码失效模式已 **关闭**。")
-
-@bot_client.on(events.NewMessage(pattern=r"^/code (\S+) (\d+)$"))
-async def consume_verify_code(event):
-    phone = event.pattern_match.group(1).strip()
-    input_code = event.pattern_match.group(2).strip()
-    sender_uid = event.sender_id
-    
-    # 检查该手机号是否处于登录状态等待验证码
-    if phone not in accounts or accounts[phone].get("client") is None:
-        await event.reply(f"电话 {phone} 未绑定或未处于登录流程中。请先使用 /addphone {phone}。")
-        return
-
-    # 查找对应的 user_login_states
-    state_found = False
-    for uid, state_data in user_login_states.items():
-        if state_data["phone"] == phone and state_data["step"] == "input_sms_code":
-            sender_uid = uid # 找到发起 addphone 的用户ID
-            state_found = True
-            break
-    
-    if not state_found:
-        await event.reply(f"电话 {phone} 未处于等待验证码状态。请先使用 /addphone {phone}。")
-        return
-
-    state = user_login_states[sender_uid]
-    client_inst = state["client"]
-    
-    # 检查是否是锁定模式
-    is_lock_mode = lock_mode.get(phone, False)
-
-    try:
-        await client_inst.sign_in(phone_code_hash=state["code_hash"], code=input_code)
-        
-        if is_lock_mode:
-            await event.reply(f"账号 {phone} 已在登录锁模式下成功登录并立即登出，验证码已失效。")
-            await client_inst.log_out()
-            await client_inst.disconnect()
-            session_name = f"session_{phone.replace('+', '')}.session"
-            if os.path.exists(session_name):
-                os.remove(session_name)
-            del accounts[phone]
-            lock_mode.pop(phone, None)
-            auto_invalidate_mode.pop(phone, None)
-            logger.info(f"Phone {phone} neutralized in lock mode.")
-        else:
-            # 正常登录流程
-            bind_account_handlers(client_inst, phone)
-            del user_login_states[sender_uid]
-            await event.reply(f"{phone} 登录完成。发送 antilogin on 启用自动转发验证码，或发送 /autoinvalidate {phone} on 启用自动失效模式。")
-
-    except FloodWaitError as flood_err:
-        await event.reply(f"Rate limit triggered, anti-bot restriction active, wait {flood_err.seconds} seconds")
-    except PhoneCodeInvalidError:
-        await event.reply("The verification code you entered is invalid or already expired")
-        del user_login_states[sender_uid] # 验证码错误或过期，清除状态，需要重新 /addphone
-    except SessionPasswordNeededError:
-        state["step"] = "input_2fa_password"
-        await event.reply("Account 2FA enabled, reply your second-step password")
-    except AuthRestartError:
-        logger.warning(f"AuthRestartError during sign-in for {phone}. Restarting authorization process.")
-        await event.reply(f"授权流程已失效，请重新使用 /addphone {phone} 命令获取新的验证码。")
-        if client_inst.is_connected():
-            await client_inst.disconnect()
-        session_name = f"session_{phone.replace('+', '')}.session"
-        if os.path.exists(session_name):
-            os.remove(session_name)
-        if phone in accounts:
-            del accounts[phone]
-        if sender_uid in user_login_states:
-            del user_login_states[sender_uid]
-    except Exception as err:
-        await event.reply(f"Code consume failure: {repr(err)}")
-        del user_login_states[sender_uid] # 登录失败，清除状态
-
-@bot_client.on(events.NewMessage)
-async def login_process(event):
-    # 仅处理来自发起 addphone 命令的用户的消息
-    if event.sender_id not in user_login_states:
-        return
-    
-    state = user_login_states[event.sender_id]
-    input_text = event.text.strip()
-    phone = state["phone"]
-    client_inst = state["client"]
-    is_lock_mode = lock_mode.get(phone, False)
-
-    if state["step"] == "input_sms_code":
-        # 如果是 /code 命令，则由 consume_verify_code 处理，这里跳过
-        if input_text.startswith("/code"):
-            return
-        
-        if not input_text.isdigit():
-            await event.reply("Please reply with the numeric SMS code.")
-            return
-        
-        try:
-            await client_inst.sign_in(
-                phone_code_hash=state["code_hash"],
-                code=input_text
+# ========== 本地化通知 ==========
+def get_notify_text(lang, code, phone, device_name, status="blocked"):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if lang == "zh":
+        if status == "blocked":
+            return (
+                "🚨 **异常登录拦截提醒**\n\n"
+                "⚠️ 发现异常登录行为\n"
+                "🛡️ 系统已拦截验证码，登录请求强制失效\n\n"
+                f"🔢 **验证码：** `{code}`\n"
+                f"📞 **目标账户：** `{phone}`\n"
+                f"💻 **非白名单设备：** {device_name}\n"
+                f"⏰ **拦截时间：** {now}\n\n"
+                "请检查你的登录设备，确认是否本人操作。"
             )
-            
-            if is_lock_mode:
-                await event.reply(f"账号 {phone} 已在登录锁模式下成功登录并立即登出，验证码已失效。")
-                await client_inst.log_out()
-                await client_inst.disconnect()
-                session_name = f"session_{phone.replace('+', '')}.session"
-                if os.path.exists(session_name):
-                    os.remove(session_name)
-                del accounts[phone]
-                lock_mode.pop(phone, None)
-                auto_invalidate_mode.pop(phone, None)
-                logger.info(f"Phone {phone} neutralized in lock mode.")
-            else:
-                bind_account_handlers(client_inst, phone)
-                del user_login_states[event.sender_id]
-                await event.reply(f"{phone} 登录完成。发送 antilogin on 启用自动转发验证码，或发送 /autoinvalidate {phone} on 启用自动失效模式。")
+        else:
+            return (
+                "❌ **拦截失败**\n\n"
+                "系统未能成功作废验证码，请手动检查登录活动。\n"
+                f"📞 账户：`{phone}`\n"
+                f"⏰ 时间：{now}"
+            )
+    else:
+        if status == "blocked":
+            return (
+                "🚨 **Suspicious Login Blocked**\n\n"
+                "⚠️ Unauthorized login attempt detected\n"
+                "🛡️ Verification code has been invalidated\n\n"
+                f"🔢 **Code:** `{code}`\n"
+                f"📞 **Account:** `{phone}`\n"
+                f"💻 **Untrusted Device:** {device_name}\n"
+                f"⏰ **Time:** {now}\n\n"
+                "Please check your active sessions."
+            )
+        else:
+            return (
+                "❌ **Block Failed**\n\n"
+                "Could not invalidate the code. Please manually check your account.\n"
+                f"📞 Account: `{phone}`\n"
+                f"⏰ Time: {now}"
+            )
 
-        except SessionPasswordNeededError:
-            state["step"] = "input_2fa_password"
-            await event.reply("Account 2FA enabled, reply your second-step password")
-        except PhoneCodeInvalidError:
-            await event.reply("SMS code incorrect or expired, retry login")
-            del user_login_states[event.sender_id] # 验证码错误或过期，清除状态，需要重新 /addphone
-        except AuthRestartError:
-            logger.warning(f"AuthRestartError during sign-in for {phone}. Restarting authorization process.")
-            await event.reply(f"授权流程已失效，请重新使用 /addphone {phone} 命令获取新的验证码。")
-            if client_inst.is_connected():
-                await client_inst.disconnect()
-            session_name = f"session_{phone.replace('+', '')}.session"
-            if os.path.exists(session_name):
-                os.remove(session_name)
-            if phone in accounts:
-                del accounts[phone]
-            del user_login_states[event.sender_id]
-        except Exception as e:
-            await event.reply(f"Login failure: {str(e)}")
-            del user_login_states[event.sender_id]
-    elif state["step"] == "input_2fa_password":
-        try:
-            await client_inst.sign_in(password=input_text)
-            
-            if is_lock_mode:
-                await event.reply(f"账号 {phone} 已在登录锁模式下成功登录并立即登出，验证码和密码已失效。")
-                await client_inst.log_out()
-                await client_inst.disconnect()
-                session_name = f"session_{phone.replace('+', '')}.session"
-                if os.path.exists(session_name):
-                    os.remove(session_name)
-                del accounts[phone]
-                lock_mode.pop(phone, None)
-                auto_invalidate_mode.pop(phone, None)
-                logger.info(f"Phone {phone} neutralized with 2FA in lock mode.")
-            else:
-                bind_account_handlers(client_inst, phone)
-                del user_login_states[event.sender_id]
-                await event.reply(f"{phone} 2FA verified, binding finished")
-        except Exception as e:
-            await event.reply("Wrong secondary password")
+# ========== Bot 客户端 ==========
+bot = TelegramClient(
+    os.path.join(config.SESSIONS_DIR, "bot"),
+    config.API_ID,
+    config.API_HASH,
+    connection_retries=5,
+    retry_delay=3,
+).start(bot_token=config.BOT_TOKEN)
 
-@bot_client.on(events.NewMessage(pattern=r"^/listphone$"))
-async def list_all(event):
-    if not accounts:
-        await event.reply("No bound phone accounts found")
-        return
-    output = "Bound Phone List:\n"
-    for num, data in accounts.items():
-        push_status = "Push ON" if data["anti_login"] else "Push OFF"
-        lock_status = "Lock ON" if lock_mode.get(num, False) else "Lock OFF"
-        auto_invalidate_status = "AutoInvalidate ON" if auto_invalidate_mode.get(num, False) else "AutoInvalidate OFF"
-        output = output + f"- {num} | Forward:{push_status} | Lock:{lock_status} | Invalidate:{auto_invalidate_status}\n"
-    await event.reply(output)
+clients = {}
 
-@bot_client.on(events.NewMessage(pattern=r"^/delphone (\S+)$"))
-async def delete_session(event):
-    phone = event.pattern_match.group(1).strip()
-    if phone not in accounts:
-        await event.reply("Target phone number not bound")
-        return
-    await accounts[phone]["client"].disconnect()
-    del accounts[phone]
-    lock_mode.pop(phone, None)
-    auto_invalidate_mode.pop(phone, None)
-    session_name = f"session_{phone.replace('+', '')}.session"
-    if os.path.exists(session_name):
-        os.remove(session_name)
-    await event.reply(f"Session file cleared for {phone}")
-
-@bot_client.on(events.NewMessage(pattern=r"^/logout (\S+)$"))
-async def remote_logout(event):
-    phone = event.pattern_match.group(1).strip()
-    if phone not in accounts:
-        await event.reply("Target phone number not bound")
-        return
+async def start_phone_client(phone, user_id):
+    session_path = os.path.join(config.SESSIONS_DIR, f"{phone}.session")
+    client = TelegramClient(
+        session_path,
+        config.API_ID,
+        config.API_HASH,
+        connection_retries=5,
+        retry_delay=3,
+        auto_reconnect=True,
+    )
     try:
-        await accounts[phone]["client"].log_out()
-        await accounts[phone]["client"].disconnect()
-        await event.reply(f"Remote logout completed for {phone}")
+        await client.start(phone=phone)
     except Exception as e:
-        await event.reply(f"Logout operation error: {repr(e)}")
+        logger.error(f"启动客户端失败 {phone}: {e}")
+        await bot.send_message(user_id, f"❌ 启动监听失败 {phone}: {e}")
+        return None
 
+    clients[phone] = client
+
+    @client.on(events.NewMessage(from_users=777000))
+    async def handler(event):
+        accounts = load_accounts()
+        uid = str(user_id)
+        if uid not in accounts or phone not in accounts[uid]:
+            return
+        if not accounts[uid][phone].get("enabled", True):
+            return
+
+        match = re.search(r'\b(\d{5,8})\b', event.raw_text)
+        if not match:
+            return
+        code = match.group(1)
+        logger.info(f"[{phone}] 捕获验证码: {code}")
+
+        try:
+            auths = await client(GetAuthorizations())
+        except Exception as e:
+            logger.error(f"[{phone}] 获取设备列表失败: {e}")
+            await bot.send_message(user_id, f"⚠️ 无法获取设备列表，请手动检查。\n{phone}")
+            return
+
+        devices = []
+        for auth in auths.authorizations:
+            device_id = f"{auth.device_model} ({auth.system_version})"
+            devices.append({
+                "id": device_id,
+                "device_model": auth.device_model,
+                "system_version": auth.system_version,
+                "hash": auth.hash
+            })
+
+        whitelist = accounts[uid][phone].get("whitelist", [])
+        untrusted = [d for d in devices if d["id"] not in whitelist and d["device_model"] not in whitelist]
+        if not untrusted:
+            logger.info(f"[{phone}] 所有设备均在白名单中，放行")
+            return
+
+        device_name = untrusted[0]["id"]
+        try:
+            await client(InvalidateSignInCodes(codes=[code]))
+            logger.info(f"[{phone}] 验证码 {code} 已作废")
+            status = "blocked"
+        except Exception as e:
+            logger.error(f"[{phone}] 作废失败: {e}")
+            status = "failed"
+
+        text = get_notify_text(config.DEFAULT_LANG, code, phone, device_name, status)
+        try:
+            await bot.send_message(user_id, text, parse_mode='markdown')
+        except Exception as e:
+            logger.error(f"发送通知给 {user_id} 失败: {e}")
+
+    try:
+        await client.run_until_disconnected()
+    except Exception as e:
+        logger.error(f"[{phone}] 客户端异常断开: {e}")
+    finally:
+        clients.pop(phone, None)
+
+# ========== Bot 命令 ==========
+@bot.on(events.NewMessage(pattern='/start'))
+async def start_cmd(event):
+    await event.reply(
+        "🤖 **反登录机器人 (白名单版)**\n\n"
+        "添加你的手机号，我会监控登录验证码，\n"
+        "只有**非白名单设备**发起的登录才会被拦截。\n\n"
+        "**命令：**\n"
+        "/add +8613800138000 - 添加托管号码\n"
+        "/list - 查看你的托管号码\n"
+        "/remove +8613800138000 - 移除托管号码\n"
+        "/status - 查看各号码状态\n"
+        "/whitelist +8613800138000 - 查看该号码的白名单\n"
+        "/add_device +86... 设备名 - 添加设备到白名单\n"
+        "/remove_device +86... 设备名 - 从白名单移除\n"
+        "/enable +8613800138000 - 开启该号码防护\n"
+        "/disable +8613800138000 - 关闭该号码防护\n"
+        "/help - 显示此帮助"
+    )
+
+@bot.on(events.NewMessage(pattern='/add'))
+async def add_cmd(event):
+    user_id = event.sender_id
+    args = event.raw_text.split()
+    if len(args) < 2:
+        await event.reply("❌ 请提供手机号，例如：`/add +8613800138000`")
+        return
+    phone = args[1]
+    if not phone.startswith('+'):
+        phone = '+' + phone
+
+    accounts = load_accounts()
+    uid = str(user_id)
+    if uid in accounts and phone in accounts[uid]:
+        await event.reply(f"⚠️ 手机号 {phone} 已在你的托管列表中。")
+        return
+
+    session_path = os.path.join(config.SESSIONS_DIR, f"{phone}.session")
+    client = TelegramClient(session_path, config.API_ID, config.API_HASH)
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.send_code_request(phone)
+            await event.reply(f"📱 验证码已发送至 {phone}，请输入验证码（回复此消息）：")
+
+            @bot.on(events.NewMessage(from_users=user_id))
+            async def code_reply(ev):
+                code = ev.raw_text.strip()
+                if not code.isdigit():
+                    await ev.reply("❌ 验证码必须是数字，重新输入或 /cancel")
+                    return
+                try:
+                    await client.sign_in(phone, code)
+                except SessionPasswordNeededError:
+                    await ev.reply("🔐 该账户启用了两步验证，请输入二级密码：")
+                    @bot.on(events.NewMessage(from_users=user_id))
+                    async def password_reply(pev):
+                        pwd = pev.raw_text.strip()
+                        try:
+                            await client.sign_in(password=pwd)
+                        except Exception as e:
+                            await pev.reply(f"❌ 登录失败: {e}")
+                            return
+                        await finish_add(phone, user_id, client)
+                        bot.remove_event_handler(code_reply)
+                        bot.remove_event_handler(password_reply)
+                    return
+                except Exception as e:
+                    await ev.reply(f"❌ 登录失败: {e}")
+                    return
+                await finish_add(phone, user_id, client)
+                bot.remove_event_handler(code_reply)
+        else:
+            await finish_add(phone, user_id, client)
+    except Exception as e:
+        await event.reply(f"❌ 添加失败: {e}")
+    finally:
+        if client and client.is_connected():
+            await client.disconnect()
+
+async def finish_add(phone, user_id, client):
+    accounts = load_accounts()
+    uid = str(user_id)
+    if uid not in accounts:
+        accounts[uid] = {}
+    if phone not in accounts[uid]:
+        accounts[uid][phone] = {"whitelist": [], "enabled": True}
+        save_accounts(accounts)
+    if client and client.is_connected():
+        await client.disconnect()
+    asyncio.create_task(start_phone_client(phone, user_id))
+    await bot.send_message(user_id, f"✅ 手机号 {phone} 已添加，反登录监控已启动")
+
+@bot.on(events.NewMessage(pattern='/list'))
+async def list_cmd(event):
+    user_id = str(event.sender_id)
+    accounts = load_accounts()
+    data = accounts.get(user_id, {})
+    if not data:
+        await event.reply("📭 你还没有添加任何托管号码。")
+        return
+    lines = []
+    for phone, info in data.items():
+        status = "✅" if info.get("enabled", True) else "⏸"
+        lines.append(f"{status} {phone} (白名单 {len(info.get('whitelist', []))}个设备)")
+    await event.reply("📋 **你的托管号码：**\n\n" + "\n".join(lines))
+
+@bot.on(events.NewMessage(pattern='/remove'))
+async def remove_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split()
+    if len(args) < 2:
+        await event.reply("❌ 请提供要移除的手机号，例如：`/remove +8613800138000`")
+        return
+    phone = args[1]
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    del accounts[user_id][phone]
+    if not accounts[user_id]:
+        del accounts[user_id]
+    save_accounts(accounts)
+    if phone in clients:
+        try:
+            await clients[phone].disconnect()
+        except:
+            pass
+        clients.pop(phone, None)
+    await event.reply(f"✅ 已移除 {phone}，监控已停止。")
+
+@bot.on(events.NewMessage(pattern='/status'))
+async def status_cmd(event):
+    user_id = str(event.sender_id)
+    accounts = load_accounts()
+    data = accounts.get(user_id, {})
+    if not data:
+        await event.reply("📭 没有托管号码。")
+        return
+    lines = []
+    for phone in data:
+        if phone in clients and clients[phone].is_connected():
+            lines.append(f"✅ {phone} - 在线")
+        else:
+            lines.append(f"❌ {phone} - 离线")
+    await event.reply("📊 **连接状态：**\n\n" + "\n".join(lines))
+
+@bot.on(events.NewMessage(pattern='/whitelist'))
+async def whitelist_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split()
+    if len(args) < 2:
+        await event.reply("❌ 请指定手机号，例如：`/whitelist +8613800138000`")
+        return
+    phone = args[1]
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    whitelist = accounts[user_id][phone].get("whitelist", [])
+    if not whitelist:
+        await event.reply(f"📭 {phone} 的白名单为空。")
+    else:
+        lines = [f"{i+1}. {dev}" for i, dev in enumerate(whitelist)]
+        await event.reply(f"📋 **{phone} 的白名单设备：**\n\n" + "\n".join(lines))
+
+@bot.on(events.NewMessage(pattern='/add_device'))
+async def add_device_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split(maxsplit=2)
+    if len(args) < 3:
+        await event.reply("❌ 格式：`/add_device +8613800138000 设备名称`")
+        return
+    phone = args[1]
+    device = args[2].strip()
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    whitelist = accounts[user_id][phone].setdefault("whitelist", [])
+    if device in whitelist:
+        await event.reply(f"⚠️ `{device}` 已在白名单中。")
+        return
+    whitelist.append(device)
+    save_accounts(accounts)
+    await event.reply(f"✅ 已添加 `{device}` 到 {phone} 的白名单。")
+
+@bot.on(events.NewMessage(pattern='/remove_device'))
+async def remove_device_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split(maxsplit=2)
+    if len(args) < 3:
+        await event.reply("❌ 格式：`/remove_device +8613800138000 设备名称`")
+        return
+    phone = args[1]
+    device = args[2].strip()
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    whitelist = accounts[user_id][phone].get("whitelist", [])
+    if device not in whitelist:
+        await event.reply(f"⚠️ `{device}` 不在白名单中。")
+        return
+    whitelist.remove(device)
+    save_accounts(accounts)
+    await event.reply(f"✅ 已移除 `{device}` 从 {phone} 的白名单。")
+
+@bot.on(events.NewMessage(pattern='/enable'))
+async def enable_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split()
+    if len(args) < 2:
+        await event.reply("❌ 请指定手机号，例如：`/enable +8613800138000`")
+        return
+    phone = args[1]
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    accounts[user_id][phone]["enabled"] = True
+    save_accounts(accounts)
+    await event.reply(f"✅ {phone} 的防护已开启。")
+
+@bot.on(events.NewMessage(pattern='/disable'))
+async def disable_cmd(event):
+    user_id = str(event.sender_id)
+    args = event.raw_text.split()
+    if len(args) < 2:
+        await event.reply("❌ 请指定手机号，例如：`/disable +8613800138000`")
+        return
+    phone = args[1]
+    accounts = load_accounts()
+    if user_id not in accounts or phone not in accounts[user_id]:
+        await event.reply(f"⚠️ 手机号 {phone} 不在你的托管列表中。")
+        return
+    accounts[user_id][phone]["enabled"] = False
+    save_accounts(accounts)
+    await event.reply(f"⏸ {phone} 的防护已暂停。")
+
+@bot.on(events.NewMessage(pattern='/help'))
+async def help_cmd(event):
+    await start_cmd(event)
+
+@bot.on(events.NewMessage(pattern='/cancel'))
+async def cancel_cmd(event):
+    await event.reply("⏹ 操作已取消。")
+
+# ========== 启动 ==========
 async def main():
-    logger.info("Telegram-Lock Started, waiting commands...")
-    # 尝试加载所有现有的 session_*.session 文件
-    for filename in os.listdir('.'):
-        if filename.startswith('session_') and filename.endswith('.session'):
-            phone_part = filename[len('session_'):-len('.session')]
-            original_phone = '+' + phone_part if not phone_part.startswith('+') else phone_part
-            
-            try:
-                client = TelegramClient(filename, API_ID, API_HASH)
-                await client.connect()
-                if await client.is_user_authorized():
-                    accounts[original_phone] = {"client": client, "anti_login": False}
-                    lock_mode[original_phone] = False
-                    auto_invalidate_mode[original_phone] = False
-                    bind_account_handlers(client, original_phone)
-                    logger.info(f"已加载现有会话文件: {filename} for {original_phone}")
-                else:
-                    logger.warning(f"现有会话文件 {filename} 未授权或已失效，已删除。")
-                    await client.disconnect()
-                    os.remove(filename)
-            except Exception as e:
-                logger.error(f"加载会话文件 {filename} 时发生错误: {e}")
-                if os.path.exists(filename):
-                    os.remove(filename)
-
-    await bot_client.start(bot_token=BOT_TOKEN)
-    logger.info("Management Bot Online, send /start for command list")
-    await bot_client.run_until_disconnected()
-
+    accounts = load_accounts()
+    for uid, phones in accounts.items():
+        for phone in phones:
+            if phone not in clients:
+                asyncio.create_task(start_phone_client(phone, int(uid)))
+    await bot.run_until_disconnected()
 
 if __name__ == "__main__":
+    logger.info("🤖 反登录机器人 (白名单版) 启动中...")
     asyncio.run(main())
