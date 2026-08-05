@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.tl.functions.account import GetAuthorizations, InvalidateSignInCodes
+from telethon.tl.functions.account import GetAuthorizationsRequest, InvalidateSignInCodesRequest
 import config
 
 logging.basicConfig(
