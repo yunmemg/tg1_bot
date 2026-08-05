@@ -63,20 +63,16 @@ def register_all_commands(bot):
                             await ev.reply("⚠️网络连接已断开，操作超时，请重新执行 /add")
                         else:
                             await ev.reply(f"登录失败：{err_str}")
-                        # 登录失败才关闭连接
                         if acc_client.is_connected():
                             await acc_client.disconnect()
                         return
-                    # 登录成功，移交连接，不关闭
                     await finish_start_account(target_phone, sender_uid, acc_client, bot)
                 return
-            # 已经授权过的账号直接启动监控
             await finish_start_account(target_phone, sender_uid, acc_client, bot)
         except Exception as err:
             await event.reply(f"账号添加异常：{str(err)}")
             if "acc_client" in locals() and acc_client.is_connected():
                 await acc_client.disconnect()
-        # !!! 彻底移除原来的 finally 代码块，禁止在这里断开acc_client
 
     async def finish_start_account(phone, admin_uid, acc_client, bot):
         if phone in running_accounts:
@@ -143,7 +139,7 @@ def register_all_commands(bot):
         if ok:
             await event.reply(f"✅ {dev_name} 已加入 {phone} 白名单")
         else:
-            await event.reply(f"⚠️该设备已经存在白名单")
+            await event.reply("⚠️该设备已经存在白名单")
 
     @bot.on(events.NewMessage(pattern="/remove_device"))
     async def remove_dev_white(event):
@@ -157,4 +153,4 @@ def register_all_commands(bot):
         if ok:
             await event.reply(f"✅ {dev_name} 已从 {phone} 移除")
         else:
-            await event.reply(f"⚠️未找到该白名单设备")<
+            await event.reply("⚠️未找到该白名单设备")<
