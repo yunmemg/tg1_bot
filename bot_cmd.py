@@ -29,7 +29,7 @@ def register_all_commands(bot):
         sender_uid = event.sender_id
         args = event.raw_text.split()
         if len(args) < 2:
-            await event.reply("格式错误，示例：/add +8613800000000")
+            await event.reply("格式错误，示例：/add +8613800138000")
             return
         target_phone = args[1]
         session_path = f"{config.SESSIONS_DIR}/{target_phone}.session"
@@ -40,13 +40,14 @@ def register_all_commands(bot):
             if not await acc_client.is_user_authorized():
                 code_req_res = await acc_client.send_code_request(target_phone)
                 code_hash = code_req_res.phone_code_hash
-                await event.reply(f"{target_phone} 验证码已下发，请尽快回复纯数字验证码，重复发送/add会导致验证码失效！")
+                await event.reply(f"{target_phone} 验证码已下发，⚠️收到验证码立刻回复纯数字！慢了连接会断开！")
 
                 @bot.on(events.NewMessage(from_users=sender_uid))
-                async def code_input_handler(ev):
+                async def code_handler(ev):
+                    bot.remove_event_handler(code_handler)
                     code_input = ev.raw_text.strip()
                     if not code_input.isdigit():
-                        await ev.reply("验证码仅支持纯数字！")
+                        await ev.reply("⚠️仅回复验证码数字，不要文字空格！")
                         return
                     try:
                         await acc_client.sign_in(
@@ -55,56 +56,64 @@ def register_all_commands(bot):
                             phone_code_hash=code_hash
                         )
                     except Exception as err:
-                        await ev.reply(f"登录失败：{str(err)}")
+                        err_str = str(err)
+                        if "nonce" in err_str or "hash" in err_str:
+                            await ev.reply("⚠️服务器时间偏移校验失败，请重新发送 /add 获取新验证码")
+                        elif "disconnected" in err_str:
+                            await ev.reply("⚠️网络连接已断开，操作超时，请重新执行 /add")
+                        else:
+                            await ev.reply(f"登录失败：{err_str}")
+                        # 登录失败才关闭连接
+                        if acc_client.is_connected():
+                            await acc_client.disconnect()
                         return
+                    # 登录成功，移交连接，不关闭
                     await finish_start_account(target_phone, sender_uid, acc_client, bot)
-                    bot.remove_event_handler(code_input_handler)
                 return
+            # 已经授权过的账号直接启动监控
             await finish_start_account(target_phone, sender_uid, acc_client, bot)
         except Exception as err:
-            await event.reply(f"账号添加失败：{str(err)}")
-        finally:
+            await event.reply(f"账号添加异常：{str(err)}")
             if "acc_client" in locals() and acc_client.is_connected():
                 await acc_client.disconnect()
+        # !!! 彻底移除原来的 finally 代码块，禁止在这里断开acc_client
 
     async def finish_start_account(phone, admin_uid, acc_client, bot):
         if phone in running_accounts:
-            await bot.send_message(admin_uid, f"{phone} 已处于监控运行中")
+            await bot.send_message(admin_uid, f"{phone} 已经处于监控运行中")
             return
-        task = asyncio.create_task(start_single_account(phone, admin_uid, bot))
+        task = asyncio.create_task(start_single_account(phone, admin_uid, bot, acc_client))
         background_task_set.add(task)
         task.add_done_callback(background_task_set.discard)
         running_accounts[phone] = True
         await bot.send_message(admin_uid, f"✅ {phone} 登录成功，验证码防护已启动")
 
-    async def start_single_account(phone, admin_uid, bot):
-        from telethon import TelegramClient
-        sess_file = f"{config.SESSIONS_DIR}/{phone}.session"
-        cli = TelegramClient(sess_file, config.API_ID, config.API_HASH, auto_reconnect=True)
+    async def start_single_account(phone, admin_uid, bot, cli):
         try:
-            await cli.connect()
             await bind_captcha_listener(cli, phone, admin_uid, bot)
             await cli.run_until_disconnected()
         except Exception as err:
-            logger.error(f"[{phone}] 监听进程断开：{str(err)}")
+            logger.error(f"[{phone}] 账号监听断开：{str(err)}")
         finally:
             running_accounts.pop(phone, None)
-            await cli.disconnect()
+            if cli.is_connected():
+                await cli.disconnect()
+            await bot.send_message(admin_uid, f"⚠️ {phone} 监控会话已断开")
 
     @bot.on(events.NewMessage(pattern="/list"))
     async def list_account(event):
         if not running_accounts:
-            await event.reply("暂无托管监控账号")
+            await event.reply("暂无正在托管的账号")
             return
-        text = "当前托管号码：\n" + "\n".join(running_accounts.keys())
+        text = "正在托管号码列表：\n" + "\n".join(running_accounts.keys())
         await event.reply(text)
 
     @bot.on(events.NewMessage(pattern="/status"))
     async def status_cmd(event):
         if not running_accounts:
-            await event.reply("无在线账号")
+            await event.reply("当前无运行账号")
             return
-        lines = [f"✅ {p} 在线监控中" for p in running_accounts]
+        lines = [f"✅ {p}" for p in running_accounts.keys()]
         await event.reply("\n".join(lines))
 
     @bot.on(events.NewMessage(pattern="/whitelist"))
@@ -112,40 +121,40 @@ def register_all_commands(bot):
         uid = event.sender_id
         args = event.raw_text.split()
         if len(args) < 2:
-            await event.reply("格式：/whitelist +8613800000000")
+            await event.reply("格式：/whitelist +8613800138000")
             return
         phone = args[1]
         dev_list = get_phone_whitelist(uid, phone)
         if not dev_list:
             await event.reply(f"{phone} 的设备白名单为空")
             return
-        text = f"{phone} 信任设备列表：\n" + "\n".join(dev_list)
-        await event.reply(text)
+        txt = f"{phone} 信任设备：\n" + "\n".join(dev_list)
+        await event.reply(txt)
 
     @bot.on(events.NewMessage(pattern="/add_device"))
     async def add_dev_white(event):
         uid = event.sender_id
         args = event.raw_text.split(maxsplit=2)
-        if len(args) < 3:
-            await event.reply("格式：/add_device +86xxx 设备全称")
+        if len(args) <3:
+            await event.reply("格式：/add_device +86xxx 设备名称")
             return
         phone, dev_name = args[1], args[2]
         ok = add_white_device(uid, phone, dev_name)
         if ok:
             await event.reply(f"✅ {dev_name} 已加入 {phone} 白名单")
         else:
-            await event.reply(f"⚠️ {dev_name} 已存在白名单")
+            await event.reply(f"⚠️该设备已经存在白名单")
 
     @bot.on(events.NewMessage(pattern="/remove_device"))
     async def remove_dev_white(event):
         uid = event.sender_id
         args = event.raw_text.split(maxsplit=2)
-        if len(args) < 3:
-            await event.reply("格式：/remove_device +86xxx 设备全称")
+        if len(args) <3:
+            await event.reply("格式：/remove_device +86xxx 设备名称")
             return
         phone, dev_name = args[1], args[2]
         ok = remove_white_device(uid, phone, dev_name)
         if ok:
-            await event.reply(f"✅ {dev_name} 已从白名单移除")
+            await event.reply(f"✅ {dev_name} 已从 {phone} 移除")
         else:
-            await event.reply(f"⚠️ 不存在该设备")
+            await event.reply(f"⚠️未找到该白名单设备")<
