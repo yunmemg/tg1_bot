@@ -9,6 +9,7 @@ logger = logging.getLogger("BotCommand")
 running_accounts = dict()
 background_task_set = set()
 
+
 def register_all_commands(bot):
     @bot.on(events.NewMessage(pattern="/start|/help"))
     async def help_cmd(event):
@@ -37,17 +38,22 @@ def register_all_commands(bot):
         try:
             await acc_client.connect()
             if not await acc_client.is_user_authorized():
-                await acc_client.send_code_request(target_phone)
-                await event.reply(f"{target_phone} 验证码已下发，请直接回复数字验证码登录")
+                send_code_result = await acc_client.send_code_request(target_phone)
+                await event.reply(f"{target_phone} 验证码已下发，请直接回复数字验证码登录（尽快输入，验证码会快速过期）")
+                code_hash = send_code_result.phone_code_hash
 
                 @bot.on(events.NewMessage(from_users=sender_uid))
                 async def code_input_handler(ev):
                     code_input = ev.raw_text.strip()
                     if not code_input.isdigit():
-                        await ev.reply("验证码只能为纯数字")
+                        await ev.reply("验证码只能输入纯数字！")
                         return
                     try:
-                        await acc_client.sign_in(target_phone, code=code_input)
+                        await acc_client.sign_in(
+                            phone=target_phone,
+                            code=code_input,
+                            phone_code_hash=code_hash
+                        )
                     except Exception as err:
                         await ev.reply(f"登录失败：{str(err)}")
                         return
@@ -58,7 +64,7 @@ def register_all_commands(bot):
         except Exception as err:
             await event.reply(f"账号添加失败：{str(err)}")
         finally:
-            if acc_client.is_connected():
+            if 'acc_client' in locals() and acc_client.is_connected():
                 await acc_client.disconnect()
 
     async def finish_start_account(phone, admin_uid, acc_client, bot):
