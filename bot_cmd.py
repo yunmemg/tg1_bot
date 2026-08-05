@@ -153,4 +153,4 @@ def register_all_commands(bot):
         if ok:
             await event.reply(f"✅ {dev_name} 已从 {phone} 移除")
         else:
-            await event.reply("⚠️未找到该白名单设备")<
+            await event.reply("⚠️未找到该白名单设备")
