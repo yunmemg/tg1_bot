@@ -1,0 +1,10 @@
+*.session
+*.session-journal
+sessions/
+accounts.json
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+config_local.py
