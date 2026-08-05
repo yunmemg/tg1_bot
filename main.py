@@ -1,4 +1,7 @@
 import os
+# 强制东八区时区，消除容器时差导致验证码直接过期
+os.environ["TZ"] = "Asia/Shanghai"
+
 import asyncio
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -51,7 +54,7 @@ def init_logger():
     file_handler.addFilter(LogFilterUseless())
     root_logger.addHandler(file_handler)
 
-# 跨平台单进程锁，防止重复启动
+# 跨平台单进程锁，防止重复启动损坏session
 class ProcessLock:
     def __init__(self, lock_path):
         self.path = lock_path
@@ -93,7 +96,7 @@ async def clean_resource():
     global bot_client
     logger = logging.getLogger("Clean")
     from bot_cmd import running_accounts
-    logger.info("程序退出，清理资源")
+    logger.info("程序退出，开始清理资源")
     if bot_client:
         await bot_client.disconnect()
     running_accounts.clear()
@@ -112,7 +115,7 @@ async def main():
         os.makedirs(config.SESSIONS_DIR, exist_ok=True)
         logger.info(f"程序启动，Telethon版本：{telethon.__version__}")
 
-        # 初始化机器人
+        # 初始化机器人客户端
         bot_sess = os.path.join(config.SESSIONS_DIR, "bot.session")
         bot_client = TelegramClient(bot_sess, config.API_ID, config.API_HASH, auto_reconnect=True)
         register_all_commands(bot_client)
