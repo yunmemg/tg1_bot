@@ -1,22 +1,18 @@
-# -*- coding: utf-8 -*-
+# Telegram API 凭证
+API_ID = 19684564
+API_HASH = "6219dccd88035a229ec3aa84d8162a38"
+# 替换你自己机器人Token
+BOT_TOKEN = "8835075322:AAE7M5wKX9G5S6Ni_fXg3zqImVCFLRh2Am8"
 
-# =====================================================
-# ⚠️ 重要：请先重置泄露的 API 凭证！
-# 去 https://my.telegram.org/apps 删除旧应用，创建新应用
-# 然后替换下面 4 个值
-# =====================================================
+# 文件路径
+SESSIONS_DIR = "./sessions"
+WHITELIST_FILE = "./whitelist.json"
+LOG_FOLDER = "./logs"
+LOCK_FILE = "./sessions/run.lock"
 
-# ----- Telegram API 凭证（必填）-----
-API_ID = 19684564                # 替换为你的新 API ID（数字）
-API_HASH = "6219dccd88035a229ec3aa84d8162a38"      # 替换为你的新 API Hash（字符串）
-
-# ----- Bot Token（必填）-----
-BOT_TOKEN = "8835075322:AAE7M5wKX9G5S6Ni_fXg3zqImVCFLRh2Am8"    # 从 @BotFather 获取
-
-# ----- 管理员 ID（必填）-----
-ADMIN_IDS = [102466844]         # 替换为你的数字 ID，从 @userinfobot 获取
-
-# ----- 其他配置（不用改）-----
+# 配置参数
 DEFAULT_LANG = "zh"
-ACCOUNTS_FILE = "accounts.json"
-SESSIONS_DIR = "sessions"
+CONSOLE_LOG_LEVEL = "WARNING"
+FILE_LOG_LEVEL = "DEBUG"
+LOG_SAVE_DAYS = 30
+TEMP_LOCK_SESS_PREFIX = "temp_lock_"
