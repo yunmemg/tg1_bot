@@ -35,9 +35,9 @@ def register_all_commands(bot):
         from telethon import TelegramClient
         acc_client = TelegramClient(session_path, config.API_ID, config.API_HASH)
         try:
-            await acc.connect()
-            if not await acc.is_user_authorized():
-                await acc.send_code_request(target_phone)
+            await acc_client.connect()
+            if not await acc_client.is_user_authorized():
+                await acc_client.send_code_request(target_phone)
                 await event.reply(f"{target_phone} 验证码已下发，请直接回复数字验证码登录")
 
                 @bot.on(events.NewMessage(from_users=sender_uid))
@@ -47,19 +47,19 @@ def register_all_commands(bot):
                         await ev.reply("验证码只能为纯数字")
                         return
                     try:
-                        await acc.sign_in(target_phone, code=code_input)
+                        await acc_client.sign_in(target_phone, code=code_input)
                     except Exception as err:
                         await ev.reply(f"登录失败：{str(err)}")
                         return
-                    await finish_start_account(target_phone, sender_uid, acc, bot)
+                    await finish_start_account(target_phone, sender_uid, acc_client, bot)
                     bot.remove_event_handler(code_input_handler)
                 return
-            await finish_start_account(target_phone, sender_uid, acc, bot)
+            await finish_start_account(target_phone, sender_uid, acc_client, bot)
         except Exception as err:
             await event.reply(f"账号添加失败：{str(err)}")
         finally:
-            if acc.is_connected():
-                await acc.disconnect()
+            if acc_client.is_connected():
+                await acc_client.disconnect()
 
     async def finish_start_account(phone, admin_uid, acc_client, bot):
         if phone in running_accounts:
