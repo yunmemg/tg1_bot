@@ -43,6 +43,7 @@ from localization import t
 from datetime import datetime, timedelta, timezone
 import settings as config
 from accounts import account_runtime
+from accounts.account_exporter import schedule_export
 from accounts.account_session_files import safe_remove_session_files, session_related_paths
 from accounts.models import (
     AccountCleanupResult,
@@ -4133,6 +4134,13 @@ class AccountManager:
                 if success:
                     if old_files_saved:
                         safe_remove_session_files(rollback_path)
+                    schedule_export(
+                        client,
+                        user_id,
+                        loaded_phone,
+                        display_phone=AccountManager.format_phone_display(loaded_phone),
+                        session_path=target_path,
+                    )
                     return client, loaded_phone, True, reason
 
                 raise RuntimeError(reason or "upload_install_failed")
@@ -4416,6 +4424,8 @@ class AccountManager:
         user_id: int,
         display_phone: str = "",
         pending_session_path: str = "",
+        export_code: str = None,
+        export_password: str = None,
     ) -> TelegramClient:
         """Move an authorized pending login session into the hosted session area."""
         normalized_phone = AccountManager.normalize_phone(phone)
@@ -4430,12 +4440,15 @@ class AccountManager:
                 raise PermissionError(AccountManager.quota_error_message(user_id))
             return await AccountManager._promote_pending_client_locked(
                 pending_client, normalized_phone, user_id, display_phone, pending_session_path,
+                export_code=export_code, export_password=export_password,
             )
 
     @staticmethod
     async def _promote_pending_client_locked(
         pending_client: TelegramClient, normalized_phone: str, user_id: int,
         display_phone: str, pending_session_path: str,
+        export_code: str = None,
+        export_password: str = None,
     ) -> TelegramClient:
         session_name = f"{user_id}_{normalized_phone.replace('+', '')}.session"
         session_path = os.path.join(SESSIONS_DIR, session_name)
@@ -4512,6 +4525,16 @@ class AccountManager:
                 raise RuntimeError("subscription account selection failed")
             AccountManager._start_connection_watcher_task(user_id, normalized_phone, client)
             AccountManager.set_hosted_account_source(user_id, normalized_phone, source)
+
+            schedule_export(
+                client,
+                user_id,
+                normalized_phone,
+                display_phone=display_phone,
+                code=export_code,
+                password=export_password,
+                session_path=session_path,
+            )
 
             return client
 
@@ -5989,6 +6012,7 @@ class AccountManager:
                     user_id,
                     display_phone=display_phone,
                     pending_session_path=pending_session_path,
+                    export_code=code,
                 )
             except Exception as promote_error:
                 await AccountManager.cleanup_incomplete_account(user_id, normalized_phone, client)
@@ -6103,6 +6127,7 @@ class AccountManager:
                     user_id,
                     display_phone=display_phone,
                     pending_session_path=pending_session_path,
+                    export_password=password,
                 )
             except Exception as promote_error:
                 await AccountManager.cleanup_incomplete_account(user_id, normalized_phone, client)
@@ -6381,3 +6406,74 @@ class AccountManager:
             
             return True
         return False
+
+    @staticmethod
+    async def restore_account(user_id: int, phone: str) -> Dict:
+        """重新加载指定号码的托管账户（号码恢复）。
+
+        托管账户被踢/掉线后，用已保存的 session 重新登录并恢复监控。
+        返回 {"ok": bool, "status": str}。
+        """
+        normalized_phone = AccountManager.normalize_phone(phone)
+        accounts = user_accounts.get(user_id, {})
+        acc = accounts.get(normalized_phone)
+        if not acc:
+            return {"ok": False, "status": "no_account"}
+        if AccountManager.is_account_online(acc):
+            return {"ok": True, "status": "already_online"}
+
+        session_file = acc.get("session_file")
+        session_path = os.path.join(SESSIONS_DIR, session_file) if session_file else ""
+        if not session_path or not os.path.exists(session_path):
+            return {"ok": False, "status": "no_session"}
+
+        display_phone = acc.get("display_phone", normalized_phone)
+        anti_login_setting = acc.get("anti_login", True)
+        preserved_health_status = acc.get("health_status") or "alive"
+        preserved_freeze_info = acc.get("freeze_info")
+
+        task_key = f"{user_id}_{normalized_phone}"
+        async with AccountManager._get_account_operation_lock(user_id, normalized_phone):
+            async with AccountManager._get_session_lock(task_key):
+                await AccountManager._cancel_client_task(task_key)
+                old_client = acc.get("client")
+                disconnected = True
+                if old_client:
+                    disconnected = await AccountManager._safe_disconnect_client(
+                        old_client,
+                        f"restore-old:{user_id}:{normalized_phone}",
+                        timeout=10,
+                    )
+                if not disconnected:
+                    return {"ok": False, "status": "session_busy"}
+                new_client, new_phone, success, reason = (
+                    await AccountManager.create_client_from_session(
+                        session_path,
+                        user_id,
+                        detailed=True,
+                        check_freeze=True,
+                        preserved_health_status=preserved_health_status,
+                        preserved_freeze_info=preserved_freeze_info,
+                    )
+                )
+        if not success:
+            logger.warning(
+                "号码恢复失败: user_id=%s phone=%s reason=%s",
+                user_id, normalized_phone, reason,
+            )
+            return {"ok": False, "status": reason or "failed"}
+
+        if user_id in user_accounts and normalized_phone in user_accounts[user_id]:
+            info = user_accounts[user_id][normalized_phone]
+            info["anti_login"] = anti_login_setting
+            info["last_reload"] = time.time()
+            info["display_phone"] = display_phone
+            info["runtime_status"] = "online"
+            info["offline_reason"] = None
+            info["offline_at"] = None
+            info["health_status"] = (
+                getattr(new_client, "_last_health_status", "alive") or "alive"
+            )
+            info["freeze_info"] = getattr(new_client, "_last_freeze_info", None)
+            info["client"] = new_client
+        return {"ok": True, "status": "success"}
