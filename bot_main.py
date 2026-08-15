@@ -421,6 +421,7 @@ async def _reconcile_user_subscription(user_id: int) -> None:
 async def _monitor_subscriptions():
     while True:
         try:
+            DataManager.collect_expired_bonus()
             DataManager.activate_due_subscriptions()
             for user_id in DataManager.get_subscription_user_ids():
                 await _reconcile_user_subscription(user_id)
