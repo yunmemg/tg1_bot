@@ -20,6 +20,7 @@ from handlers.login_unlock_handlers import (
     cancel_login_unlock_flow,
     setup_login_unlock_handlers,
 )
+from handlers.restore_handlers import setup_restore_handlers
 from handlers.handler_utils import (
     back_button,
     clear_state,
@@ -76,9 +77,36 @@ def hosting_quota_status_text(user_id: int, language: str = None) -> str:
     return f"{parts['used_int']} / {parts['total']}"
 
 
+def plan_status_line(user_id: int, language: str = None) -> str:
+    """返回主菜单状态行的套餐/到期信息（无订阅则显示未开通）。"""
+    language = language or _language(user_id)
+    subscription = DataManager.get_subscription(user_id)
+    if not subscription:
+        return t(language, "main.plan_none")
+    plan_id = str(subscription.get("plan_id", "")).lower()
+    badge = DataManager.get_subscription_badge(plan_id)
+    plan_name = str(
+        subscription.get("plan_name") or subscription.get("plan_id") or "VIP"
+    ).upper()
+    expiry = subscription.get("expires_at", "")
+    try:
+        days_left = max(
+            (datetime.fromisoformat(expiry) - datetime.now()).days, 0
+        )
+        return t(
+            language, "main.plan_active",
+            badge=badge, plan=plan_name,
+            date=str(expiry)[:10], days=days_left,
+        )
+    except (TypeError, ValueError):
+        return t(
+            language, "main.plan_expired", badge=badge, plan=plan_name
+        )
+
+
 def main_menu_text(
     name: str, user_id: int, quota_status_text: str, online_accounts: int,
-    language: str = "zh",
+    plan_line: str, language: str = "zh",
 ) -> str:
     parts = hosting_quota_parts(user_id, language)
     return t(
@@ -91,6 +119,7 @@ def main_menu_text(
         used=parts["used"],
         remaining=parts["remaining"],
         online=online_accounts,
+        plan_line=plan_line,
     )
 
 
@@ -117,14 +146,21 @@ def language_buttons():
 
 def main_menu_buttons(user_id: int):
     language = _language(user_id)
-    # Primary row matches commercial anti-login bots: sign-in + buy quota.
+
+    def group_title(key: str):
+        return [Button.inline(t(language, key), b"pagination_noop")]
+
     buttons = [
+        group_title("main.group_accounts"),
         [Button.inline(t(language, "main.add_account"), b"add_account", icon=5775937998948404844),
-         Button.inline(t(language, "main.vip_center"), b"vip_center", icon=6028530359975548369)],
-        [Button.inline(t(language, "main.account_list"), b"list_accounts", icon=5960551395730919906),
-         Button.inline(t(language, "main.antilogin"), b"antilogin_settings", icon=5877260593903177342)],
-        [Button.inline(t(language, "main.hosting_tools"), b"hosting_menu", icon=6008118472066732010),
+         Button.inline(t(language, "main.account_list"), b"list_accounts", icon=5960551395730919906)],
+        [Button.inline(t(language, "main.restore"), b"restore_menu", icon=LOGIN_UNLOCK_CUSTOM_EMOJI_ID)],
+        [Button.inline(t(language, "main.antilogin"), b"antilogin_settings", icon=5877260593903177342),
+         Button.inline(t(language, "main.hosting_tools"), b"hosting_menu", icon=6008118472066732010)],
+        group_title("main.group_shop"),
+        [Button.inline(t(language, "main.vip_center"), b"vip_center", icon=6028530359975548369),
          Button.inline(t(language, "main.transfer_account"), b"account_transfer_accounts", icon=TRANSFER_CUSTOM_EMOJI_ID)],
+        group_title("main.group_more"),
         [Button.inline(
             t(language, "main.login_unlock"), b"login_unlock_menu",
             icon=LOGIN_UNLOCK_CUSTOM_EMOJI_ID,
@@ -142,7 +178,7 @@ def main_menu_buttons(user_id: int):
 
 def more_menu_buttons(user_id: int):
     language = _language(user_id)
-    return [
+    buttons = [
         [
             Button.inline(
                 t(language, "main.reload"), b"reload_user_accounts",
@@ -163,8 +199,30 @@ def more_menu_buttons(user_id: int):
                 icon=LANGUAGE_CUSTOM_EMOJI_ID,
             ),
         ],
-        [back_button(b"back_to_main", language=language)],
+        [
+            Button.inline(t(language, "ops.health.entry"), b"ops_health"),
+            Button.inline(t(language, "ops.checkin.entry"), b"ops_checkin"),
+        ],
+        [
+            Button.inline(t(language, "ops.invite.entry"), b"ops_invite"),
+            Button.inline(t(language, "ops.redeem.entry"), b"ops_redeem"),
+        ],
+        [
+            Button.inline(t(language, "ops.ticket.entry"), b"ops_ticket_menu"),
+            Button.inline(t(language, "ops.auto_renew.entry"), b"ops_auto_renew"),
+        ],
     ]
+    if DataManager.is_admin(user_id):
+        buttons.append([
+            Button.inline(t(language, "ops.broadcast.entry"), b"ops_broadcast"),
+            Button.inline(t(language, "ops.batch.entry"), b"ops_batch"),
+        ])
+        buttons.append([
+            Button.inline(t(language, "ops.promo.entry"), b"ops_promo"),
+            Button.inline(t(language, "ops.redeem.admin_entry"), b"ops_redeem_admin"),
+        ])
+    buttons.append([back_button(b"back_to_main", language=language)])
+    return buttons
 
 
 async def render_home(bot, event, *, edit: bool):
@@ -195,7 +253,7 @@ async def render_home(bot, event, *, edit: bool):
     name = user.first_name or t(language, "common.user")
     text = main_menu_text(
         name, user_id, hosting_quota_status_text(user_id, language),
-        online_accounts, language,
+        online_accounts, plan_status_line(user_id, language), language,
     )
     kwargs = {"buttons": main_menu_buttons(user_id), "parse_mode": "md"}
     return (
@@ -245,6 +303,7 @@ async def setup_bot_handlers(bot: TelegramClient, payment_system: PaymentSystem)
     await setup_antilogin_handlers(bot)
     await setup_transfer_handlers(bot)
     await setup_login_unlock_handlers(bot)
+    await setup_restore_handlers(bot)
     async def cache_event_sender(event):
         try:
             sender = await event.get_sender()
@@ -267,6 +326,18 @@ async def setup_bot_handlers(bot: TelegramClient, payment_system: PaymentSystem)
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
         user_id = event.sender_id
+
+        text = (event.text or "").strip()
+        payload = ""
+        if " " in text:
+            parts = text.split(" ", 1)
+            if len(parts) == 2:
+                payload = parts[1].strip()
+        if payload.startswith("invite_"):
+            from handlers.operations import checkin_invite
+            consumed = await checkin_invite.resolve_invite_payload(bot, user_id, payload)
+            if consumed:
+                return
 
         AccountManager.cleanup_stale_pending_sessions()
         cleanup_result = await cancel_all_user_flows(user_id, reason="start")
@@ -623,3 +694,14 @@ async def setup_bot_handlers(bot: TelegramClient, payment_system: PaymentSystem)
         except Exception as e:
             await safe_edit(event, t(language, "reload.failed", error=str(e)),
                              buttons=[[back_button(b"back_to_main", language=language)]])
+    
+    await _register_operations_handlers(bot, payment_system)
+
+
+async def _register_operations_handlers(bot, payment_system):
+    """注册运营扩展处理器（广播/工单/签到/自动重登录/看板/促销/卡密/批量/自动续费）。"""
+    try:
+        from handlers.operations import setup_operations_handlers
+        await setup_operations_handlers(bot, payment_system)
+    except Exception:
+        logger.exception("运营扩展处理器注册失败")
