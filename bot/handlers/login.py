@@ -70,6 +70,34 @@ async def cmd_login(message: Message):
     )
 
 
+@router.message(Command("logincookie"))
+async def cmd_logincookie(message: Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("该操作仅限管理员执行。")
+        return
+    usage = (
+        "📋 请提供平台和 Cookie，格式：\n"
+        "/logincookie qq <Cookie值>\n"
+        "/logincookie netease <Cookie值>\n\n"
+        "获取方法：电脑浏览器登录 y.qq.com 或 music.163.com，"
+        "按 F12 → Network → 刷新页面 → 点击任意请求 → 复制请求头里的 Cookie 值。"
+    )
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(usage)
+        return
+    platform = parts[1].strip().lower()
+    cookie = parts[2].strip()
+    if platform == "netease":
+        ok, msg = netease.save_cookie(cookie)
+    elif platform == "qq":
+        ok, msg = qqmusic.save_cookie(cookie)
+    else:
+        await message.answer(usage)
+        return
+    await message.answer(("✅ " if ok else "❌ ") + msg)
+
+
 @router.message(Command("logout"))
 async def cmd_logout(message: Message):
     if not _is_admin(message.from_user.id):
