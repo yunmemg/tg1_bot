@@ -63,23 +63,26 @@ async def _setup_commands(bot: Bot) -> None:
 
 async def _main() -> None:
     if not config.BOT_TOKEN:
-        logger.error("未配置 BOT_TOKEN，请在 .env 文件中填写（参考 .env.example）")
+        logger.error("未配置 BOT_TOKEN，请填写环境变量")
         sys.exit(1)
 
     database.init_db()
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
+
     dp.message.middleware(WhitelistMiddleware())
     dp.callback_query.middleware(WhitelistMiddleware())
+
     dp.include_router(_build_router())
     await _setup_commands(bot)
+
     logger.info("音乐机器人启动成功，等待消息…")
-    await dp.start_polling(bot)
+    # aiogram v3 必须使用 bot=bot 命名参数！！
+    await dp.start_polling(bot=bot)
 
 
 def main() -> None:
     import asyncio
-
     asyncio.run(_main())
 
 
