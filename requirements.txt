@@ -1,8 +1,0 @@
-# Runtime dependencies for the Anti-Login hosting bot.
-# InputKeyboardButtonUserProfile / KeyboardButtonStyle (custom-emoji buttons)
-# require Telethon 1.30+, so keep the floor at 1.30.
-telethon>=1.30
-cryptography>=41.0
-requests>=2.28
-aiohttp>=3.8
-qrcode>=7.4
