@@ -9,12 +9,15 @@
 | `/search 关键词` | 跨平台搜索歌曲，展示结果列表，点击即可播放 |
 | `/dian 关键词` | 直接点歌，自动播放最匹配的一首 |
 | `/fav` | 查看个人收藏歌单，可播放或删除 |
+| `/login` | 管理员扫码登录网易云/QQ音乐，VIP/会员歌曲对所有用户完整播放 |
+| `/login_status` | 查看各平台登录状态 |
 | `/help` | 显示帮助 |
 
 - 点歌时并行搜索三个平台，封面、歌名、歌手一并展示
 - 播放成功后点击「❤️ 收藏」加入个人歌单
 - 搜索结果显示前 5 首，支持翻页浏览
 - 可选用户白名单（仅允许指定用户使用）
+- **管理员扫码登录网易云/QQ音乐后，所有用户点歌时 VIP/会员歌曲可完整播放原时长音频**（未登录的付费歌曲会提示换平台）
 
 ## 快速开始
 
@@ -33,6 +36,7 @@ cp .env.example .env
 ```env
 BOT_TOKEN=你的机器人Token
 # ALLOWED_USER_IDS=111111111,222222222   # 可选，白名单
+# ADMIN_IDS=111111111                    # 可选，可执行 /login 的管理员
 ```
 
 ### 3. 运行
@@ -95,13 +99,15 @@ Railway 通过 `startCommand` 自动执行 `python -m bot.main`，日志可在�
 
 | 平台 | 搜索 | 播放直链 |
 |------|------|---------|
-| 网易云音乐 | 网易云官方搜索接口 | 官方外链接口 |
-| QQ音乐 | 网页版搜索接口 | `musicu.fcg` vkey 接口 |
+| 网易云音乐 | 网易云官方搜索接口 | 免费歌外链；登录态走 EAPI（付费/VIP 完整播放） |
+| QQ音乐 | 网页版搜索接口 | `musicu.fcg` UrlGetVkey（mp3，登录态可解锁 VIP 音质） |
 | 汽水音乐 | 素颜 API 搜索 | pearapi 解析接口 |
 
 **注意事项：**
 
-- QQ音乐付费/VIP 歌曲无法获取播放链接，机器人会提示并建议换平台搜索
+- 使用 `/login` 管理员扫码登录网易云/QQ音乐后，所有用户点歌会自动使用会员权限解析完整时长音频
+- 登录凭证全局共享、保存在服务器 SQLite 数据库中，仅用于解析播放地址，不会泄露
+- 仅 `ADMIN_IDS` 指定的管理员可执行 `/login`（留空则所有人可登录）
 - 各平台接口为公开逆向接口，可能因平台调整而失效；代码已在服务层隔离，便于更新替换
 - 汽水音乐解析依赖第三方公开 API（`api.suyanw.cn` / `api.pearapi.ai`），免费接口有频率限制，高频使用建议控制点歌频率
 
@@ -115,13 +121,15 @@ music-bot/
 │   ├── handlers/
 │   │   ├── commands.py      # /start /help
 │   │   ├── search.py        # 搜索、点歌、翻页
-│   │   └── favorites.py     # 收藏歌单
+│   │   ├── favorites.py     # 收藏歌单
+│   │   └── login.py         # 扫码登录
 │   ├── services/
 │   │   ├── base.py          # 歌曲数据模型
+│   │   ├── crypto.py        # weapi/eapi 加密（网易云登录态）
 │   │   ├── netease.py       # 网易云音乐
 │   │   ├── qqmusic.py       # QQ音乐
 │   │   └── qishui.py        # 汽水音乐
-│   ├── db/database.py       # SQLite 收藏存储
+│   ├── db/database.py       # SQLite 收藏/凭证存储
 │   └── utils/               # 缓存、下载、发送
 ├── requirements.txt
 ├── .env.example
@@ -134,6 +142,8 @@ music-bot/
 - aiogram 3.x
 - aiohttp
 - python-dotenv
+- pycryptodome（网易云 EAPI 加密）
+- qrcode / pillow（登录二维码生成）
 
 ## 免责声明
 
