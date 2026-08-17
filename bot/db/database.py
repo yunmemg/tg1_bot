@@ -1,63 +1,14 @@
-import sqlite3
+import json
 import time
-from pathlib import Path
 
-from ..config import config
-
-if config.DB_PATH:
-    DB_PATH = Path(config.DB_PATH)
-else:
-    DB_PATH = Path(__file__).resolve().parent.parent.parent / "musicbot.db"
-
-
-def _ensure_dir() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _conn() -> sqlite3.Connection:
-    _ensure_dir()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+_favorites: list[dict] = []
+_fav_counter = 0
+_search_cache: dict[str, tuple[str, float]] = {}
+_credentials: dict[str, dict] = {}
 
 
 def init_db() -> None:
-    with _conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS favorites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                platform TEXT NOT NULL,
-                song_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                artist TEXT NOT NULL,
-                cover_url TEXT DEFAULT '',
-                extra TEXT DEFAULT '{}',
-                created_at TEXT DEFAULT (datetime('now','localtime')),
-                UNIQUE(user_id, platform, song_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS search_cache (
-                key TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS credentials (
-                platform TEXT PRIMARY KEY,
-                cookie TEXT NOT NULL,
-                extra TEXT DEFAULT '{}',
-                updated_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-            """
-        )
+    pass
 
 
 def add_favorite(
@@ -69,114 +20,81 @@ def add_favorite(
     cover_url: str = "",
     extra: str = "{}",
 ) -> bool:
-    try:
-        with _conn() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO favorites
-                (user_id, platform, song_id, title, artist, cover_url, extra)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (user_id, platform, song_id, title, artist, cover_url, extra),
-            )
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    global _fav_counter
+    for row in _favorites:
+        if row["user_id"] == user_id and row["platform"] == platform and row["song_id"] == song_id:
+            return True
+    _fav_counter += 1
+    _favorites.append(
+        {
+            "id": _fav_counter,
+            "user_id": user_id,
+            "platform": platform,
+            "song_id": song_id,
+            "title": title,
+            "artist": artist,
+            "cover_url": cover_url,
+            "extra": extra,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
+    return True
 
 
-def list_favorites(user_id: int) -> list[sqlite3.Row]:
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM favorites WHERE user_id = ? ORDER BY id DESC",
-            (user_id,),
-        ).fetchall()
+def list_favorites(user_id: int) -> list[dict]:
+    rows = [r for r in _favorites if r["user_id"] == user_id]
+    rows.sort(key=lambda r: r["id"], reverse=True)
     return rows
 
 
 def remove_favorite(user_id: int, fav_id: int) -> bool:
-    with _conn() as conn:
-        cur = conn.execute(
-            "DELETE FROM favorites WHERE user_id = ? AND id = ?",
-            (user_id, fav_id),
-        )
-    return cur.rowcount > 0
+    for i, row in enumerate(_favorites):
+        if row["user_id"] == user_id and row["id"] == fav_id:
+            del _favorites[i]
+            return True
+    return False
 
 
 def has_favorite(user_id: int, platform: str, song_id: str) -> bool:
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM favorites WHERE user_id = ? AND platform = ? AND song_id = ?",
-            (user_id, platform, song_id),
-        ).fetchone()
-    return row is not None
+    return any(
+        r["user_id"] == user_id and r["platform"] == platform and r["song_id"] == song_id
+        for r in _favorites
+    )
 
 
 def save_search_cache(key: str, data: list[dict]) -> None:
-    import json as _json
-
-    with _conn() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO search_cache (key, data, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (key, _json.dumps(data, ensure_ascii=False), time.time()),
-        )
+    _search_cache[key] = (json.dumps(data, ensure_ascii=False), time.time())
 
 
 def get_search_cache(key: str, ttl: int) -> str | None:
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT data, created_at FROM search_cache WHERE key = ?",
-            (key,),
-        ).fetchone()
-    if not row:
+    item = _search_cache.get(key)
+    if not item:
         return None
-    created_at = row["created_at"]
+    data, created_at = item
     if time.time() - created_at > ttl:
-        with _conn() as conn:
-            conn.execute("DELETE FROM search_cache WHERE key = ?", (key,))
+        _search_cache.pop(key, None)
         return None
-    return row["data"]
+    return data
 
 
 def save_credential(platform: str, cookie: str, extra: dict | None = None) -> None:
-    import json as _json
-
-    with _conn() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO credentials (platform, cookie, extra, updated_at)
-            VALUES (?, ?, ?, datetime('now','localtime'))
-            """,
-            (platform, cookie, _json.dumps(extra or {}, ensure_ascii=False)),
-        )
+    _credentials[platform] = {
+        "cookie": cookie,
+        "extra": extra or {},
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def get_credential(platform: str) -> tuple[str, dict] | None:
-    import json as _json
-
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT cookie, extra FROM credentials WHERE platform = ?",
-            (platform,),
-        ).fetchone()
-    if not row:
+    item = _credentials.get(platform)
+    if not item:
         return None
-    try:
-        extra = _json.loads(row["extra"] or "{}")
-    except (json.JSONDecodeError, TypeError):
-        extra = {}
-    return row["cookie"], extra
+    return item["cookie"], dict(item["extra"])
 
 
 def list_credentials() -> dict[str, str]:
-    with _conn() as conn:
-        rows = conn.execute("SELECT platform, updated_at FROM credentials").fetchall()
-    return {r["platform"]: r["updated_at"] for r in rows}
+    return {p: item["updated_at"] for p, item in _credentials.items()}
 
 
 def delete_credential(platform: str) -> bool:
-    with _conn() as conn:
-        cur = conn.execute("DELETE FROM credentials WHERE platform = ?", (platform,))
-    return cur.rowcount > 0
+    return _credentials.pop(platform, None) is not None
