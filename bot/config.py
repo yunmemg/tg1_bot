@@ -17,7 +17,6 @@ class Config:
         for x in os.getenv("ADMIN_IDS", "").split(",")
         if x.strip().isdigit()
     ]
-    DB_PATH: str = os.getenv("DB_PATH", "")
 
 
 config = Config()
