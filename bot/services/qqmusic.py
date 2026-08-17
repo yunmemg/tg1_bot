@@ -1,3 +1,4 @@
+import asyncio
 import json
 import random
 import re
@@ -200,42 +201,57 @@ def _parse_qr_check(raw: str) -> tuple[str, str, str]:
     return "", raw, ""
 
 
-async def _fetch_redirect_cookies(redirect_url: str, cookie: str) -> dict:
+async def _fetch_redirect_cookies(
+    session: aiohttp.ClientSession, redirect_url: str
+) -> dict:
     collected = {}
     current = redirect_url
     referer = "https://y.qq.com/"
-    async with aiohttp.ClientSession(allow_redirects=False) as session:
-        for _ in range(8):
-            if not current:
-                break
-            try:
-                async with session.get(
-                    current,
-                    headers={
-                        "User-Agent": HEADERS["User-Agent"],
-                        "Referer": referer,
-                        "Cookie": cookie,
-                    },
-                    timeout=12,
-                ) as resp:
-                    for c in resp.cookies.values():
-                        collected[c.key] = c.value
-                    location = resp.headers.get("Location", "")
-                    if not location or not (300 <= resp.status < 400):
-                        break
-                    if location.startswith("http"):
-                        current = location
-                    else:
-                        from urllib.parse import urljoin
+    for _ in range(8):
+        if not current:
+            break
+        try:
+            cookie_header = _jar_to_cookie_str(session.cookie_jar)
+            async with session.get(
+                current,
+                allow_redirects=False,
+                headers={
+                    "User-Agent": HEADERS["User-Agent"],
+                    "Referer": referer,
+                    "Cookie": cookie_header,
+                },
+                timeout=12,
+            ) as resp:
+                for c in resp.cookies.values():
+                    collected[c.key] = c.value
+                location = resp.headers.get("Location", "")
+                if not location or not (300 <= resp.status < 400):
+                    break
+                from urllib.parse import urljoin
 
-                        current = urljoin(current, location)
-                    referer = current
-            except aiohttp.ClientError:
-                break
+                current = (
+                    location if location.startswith("http") else urljoin(current, location)
+                )
+                referer = current
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            break
     return collected
 
 
+def _jar_to_cookie_str(jar: aiohttp.CookieJar) -> str:
+    seen = set()
+    parts = []
+    for m in jar:
+        key = m.key
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"{key}={m.value}")
+    return "; ".join(sorted(parts))
+
+
 async def check_qr_login(key: str) -> dict:
+    import asyncio
     from urllib.parse import parse_qs, urlencode
 
     values = parse_qs(key)
@@ -266,56 +282,73 @@ async def check_qr_login(key: str) -> dict:
         "nodirect": "0",
     }
     qs = urlencode(params)
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{QR_CHECK_API}?{qs}",
-            headers={
-                "User-Agent": HEADERS["User-Agent"],
-                "Referer": "https://xui.ptlogin2.qq.com/",
-                "Cookie": f"qrsig={qrsig}",
-            },
-            timeout=12,
-        ) as resp:
-            raw = await resp.text()
-            resp_cookies = {c.key: c.value for c in resp.cookies.values()}
 
-    code, message, redirect_url = _parse_qr_check(raw)
-    status_map = {"0": "success", "65": "expired", "66": "waiting", "67": "scanned"}
-    status = status_map.get(code, "failed")
-    if status != "success":
-        return {"status": status, "message": message or raw.strip()}
+    # 关闭自动重定向，手动接管 302，避免丢失中间 Set-Cookie
+    jar = aiohttp.CookieJar(unsafe=True)
+    async with aiohttp.ClientSession(cookie_jar=jar) as session:
+        jar.update_cookies({"qrsig": qrsig})
+        try:
+            async with session.get(
+                f"{QR_CHECK_API}?{qs}",
+                allow_redirects=False,
+                headers={
+                    "User-Agent": HEADERS["User-Agent"],
+                    "Referer": "https://xui.ptlogin2.qq.com/",
+                },
+                timeout=12,
+            ) as resp:
+                raw = await resp.text()
+                status_code = resp.status
+                location = resp.headers.get("Location", "")
+        except asyncio.TimeoutError:
+            return {"status": "failed", "message": "QQ 扫码查询超时，请重试"}
+        except aiohttp.ClientError as e:
+            return {"status": "failed", "message": f"QQ 扫码查询网络错误: {e}"}
 
-    redirect_cookies = await _fetch_redirect_cookies(redirect_url, f"qrsig={qrsig}")
-    all_cookies = {**resp_cookies, **redirect_cookies}
+        # 直接 302/303/307/308 = 登录成功，跳过 ptuiCB 文本解析
+        if status_code in (301, 302, 303, 307, 308):
+            redirect_url = location
+        else:
+            code, message, redirect_url = _parse_qr_check(raw)
+            status_map = {"0": "success", "65": "expired", "66": "waiting", "67": "scanned"}
+            status = status_map.get(code, "failed")
+            if status != "success":
+                return {"status": status, "message": message or raw.strip()}
+            if not redirect_url:
+                redirect_url = location
 
-    uin = (
-        all_cookies.get("uin")
-        or all_cookies.get("pt2gguin")
-        or all_cookies.get("p_uin")
-        or ""
-    )
-    qqmusic_key = (
-        all_cookies.get("qqmusic_key")
-        or all_cookies.get("p_skey")
-        or all_cookies.get("skey")
-        or all_cookies.get("musickey")
-        or ""
-    )
-    if not qqmusic_key:
-        return {"status": "failed", "message": "登录成功但未获取到音乐 key，请重试"}
+        redirect_cookies = await _fetch_redirect_cookies(session, redirect_url)
+        all_cookies = {c.key: c.value for c in jar}
+        all_cookies.update(redirect_cookies)
 
-    cookie_parts = []
-    for k, v in all_cookies.items():
-        if k and v:
-            cookie_parts.append(f"{k}={v}")
-    cookie_str = "; ".join(sorted(cookie_parts))
+        uin = (
+            all_cookies.get("uin")
+            or all_cookies.get("pt2gguin")
+            or all_cookies.get("p_uin")
+            or ""
+        )
+        qqmusic_key = (
+            all_cookies.get("qqmusic_key")
+            or all_cookies.get("p_skey")
+            or all_cookies.get("skey")
+            or all_cookies.get("musickey")
+            or ""
+        )
+        if not qqmusic_key:
+            return {"status": "failed", "message": "登录成功但未获取到音乐 key，请重试"}
 
-    is_vip = bool(uin) and bool(qqmusic_key)
-    try:
-        database.save_credential("qq", cookie_str, {"uin": uin, "is_vip": is_vip})
-    except Exception:
-        return {"status": "failed", "message": "登录成功但凭证保存失败，请重试"}
-    return {"status": "success", "message": message, "cookie": cookie_str}
+        cookie_parts = []
+        for k, v in all_cookies.items():
+            if k and v:
+                cookie_parts.append(f"{k}={v}")
+        cookie_str = "; ".join(sorted(cookie_parts))
+
+        is_vip = bool(uin) and bool(qqmusic_key)
+        try:
+            database.save_credential("qq", cookie_str, {"uin": uin, "is_vip": is_vip})
+        except Exception:
+            return {"status": "failed", "message": "登录成功但凭证保存失败，请重试"}
+        return {"status": "success", "message": "登录成功", "cookie": cookie_str}
 
 
 # ---------------- 登录状态查询 ----------------
