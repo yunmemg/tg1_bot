@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from pathlib import Path
 
 from ..config import config
@@ -35,6 +36,25 @@ def init_db() -> None:
                 extra TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT (datetime('now','localtime')),
                 UNIQUE(user_id, platform, song_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS search_cache (
+                key TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS credentials (
+                platform TEXT PRIMARY KEY,
+                cookie TEXT NOT NULL,
+                extra TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -89,3 +109,74 @@ def has_favorite(user_id: int, platform: str, song_id: str) -> bool:
             (user_id, platform, song_id),
         ).fetchone()
     return row is not None
+
+
+def save_search_cache(key: str, data: list[dict]) -> None:
+    import json as _json
+
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO search_cache (key, data, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (key, _json.dumps(data, ensure_ascii=False), time.time()),
+        )
+
+
+def get_search_cache(key: str, ttl: int) -> str | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT data, created_at FROM search_cache WHERE key = ?",
+            (key,),
+        ).fetchone()
+    if not row:
+        return None
+    created_at = row["created_at"]
+    if time.time() - created_at > ttl:
+        with _conn() as conn:
+            conn.execute("DELETE FROM search_cache WHERE key = ?", (key,))
+        return None
+    return row["data"]
+
+
+def save_credential(platform: str, cookie: str, extra: dict | None = None) -> None:
+    import json as _json
+
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO credentials (platform, cookie, extra, updated_at)
+            VALUES (?, ?, ?, datetime('now','localtime'))
+            """,
+            (platform, cookie, _json.dumps(extra or {}, ensure_ascii=False)),
+        )
+
+
+def get_credential(platform: str) -> tuple[str, dict] | None:
+    import json as _json
+
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT cookie, extra FROM credentials WHERE platform = ?",
+            (platform,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        extra = _json.loads(row["extra"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        extra = {}
+    return row["cookie"], extra
+
+
+def list_credentials() -> dict[str, str]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT platform, updated_at FROM credentials").fetchall()
+    return {r["platform"]: r["updated_at"] for r in rows}
+
+
+def delete_credential(platform: str) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM credentials WHERE platform = ?", (platform,))
+    return cur.rowcount > 0
