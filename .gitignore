@@ -1,7 +1,0 @@
-.env
-__pycache__/
-*.pyc
-bot.db
-musicbot.db
-*.log
-/tmp/
