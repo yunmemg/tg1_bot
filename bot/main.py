@@ -7,7 +7,7 @@ from aiogram.types import BotCommand, CallbackQuery, Message, TelegramObject
 
 from .config import config
 from .db import database
-from .handlers import commands, favorites, search
+from .handlers import commands, favorites, login, search
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +44,7 @@ def _build_router() -> Router:
     root.include_router(commands.router)
     root.include_router(search.router)
     root.include_router(favorites.router)
+    root.include_router(login.router)
     return root
 
 
@@ -53,6 +54,8 @@ async def _setup_commands(bot: Bot) -> None:
             BotCommand(command="search", description="跨平台搜索歌曲"),
             BotCommand(command="dian", description="直接点歌"),
             BotCommand(command="fav", description="我的收藏歌单"),
+            BotCommand(command="login", description="扫码登录平台账号"),
+            BotCommand(command="login_status", description="查看登录状态"),
             BotCommand(command="help", description="使用帮助"),
         ]
     )
