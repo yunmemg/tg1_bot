@@ -10,6 +10,7 @@ HELP_TEXT = (
     "/dian 关键词 - 直接点歌，播放最匹配的一首\n"
     "/fav - 查看我的收藏歌单\n"
     "/login - 管理员扫码登录网易云/QQ音乐，解锁 VIP/会员歌曲完整播放\n"
+    "/logincookie qq|netease <Cookie> - 管理员手动粘贴 Cookie 登录（扫码失效时的备选）\n"
     "/login_status - 查看各平台登录状态\n"
     "/start - 显示欢迎信息\n"
     "/help - 显示帮助\n\n"
