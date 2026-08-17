@@ -36,7 +36,7 @@ async def cb_favorite(callback: CallbackQuery):
     await callback.answer()
     _, platform, song_id = callback.data.split(":", 2)
     key = cache.make_key(platform, song_id)
-    song = cache.get(key)
+    song = cache.get_song(key)
     if not song:
         await callback.message.answer("收藏信息已过期，请重新播放后再收藏。")
         return
@@ -98,7 +98,8 @@ async def cb_playfav(callback: CallbackQuery):
         await qishui.resolve(song)
 
     if not song.audio_url:
-        await status.edit_text(f"「{song.title}」播放链接失效，可能已下架。")
+        hint = "请管理员发送 /login 登录该平台后可完整播放。" if song.platform in ("netease", "qq") else ""
+        await status.edit_text(f"「{song.title}」播放链接失效，可能为付费歌曲或已下架。{hint}")
         return
 
     ok = await send_song(callback.message.bot, callback.message.chat.id, song)
@@ -106,7 +107,7 @@ async def cb_playfav(callback: CallbackQuery):
         await status.edit_text(f"「{song.title}」播放链接失效，请稍后再试。")
         return
     key = cache.make_key(song.platform, song.song_id)
-    cache.put(key, song)
+    cache.put_song(key, song)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [

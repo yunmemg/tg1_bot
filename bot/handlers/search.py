@@ -83,7 +83,7 @@ async def cmd_search(message: Message):
         return
 
     res_key = secrets.token_hex(6)
-    cache.put(res_key, flat)
+    cache.put_list(res_key, flat)
 
     lines = [f"🔍 搜索「{keyword}」结果（共 {len(flat)} 首）：", ""]
     for idx, s in enumerate(flat[:PAGE_SIZE]):
@@ -126,9 +126,10 @@ async def _play_song(message: Message, status: Message, song: Song):
         await qishui.resolve(song)
 
     if not song.audio_url:
+        hint = "发送 /login 扫码登录该平台后可完整播放。" if song.platform in ("netease", "qq") else ""
         await status.edit_text(
             f"歌曲「{song.title}」在当前平台（{PLATFORM_NAMES[song.platform]}）无法获取播放链接，"
-            f"可能为付费/VIP 歌曲。请尝试其他平台搜索。"
+            f"可能为付费/VIP 歌曲。{hint}请尝试其他平台搜索。"
         )
         return
 
@@ -138,7 +139,7 @@ async def _play_song(message: Message, status: Message, song: Song):
         return
 
     fav_key = cache.make_key(song.platform, song.song_id)
-    cache.put(fav_key, song)
+    cache.put_song(fav_key, song)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -160,7 +161,7 @@ async def cb_play(callback: CallbackQuery):
     await callback.answer()
     _, res_key, idx_s = callback.data.split(":", 2)
     idx = int(idx_s)
-    songs = cache.get(res_key)
+    songs = cache.get_list(res_key)
     if not songs or idx >= len(songs):
         await callback.message.edit_text("搜索已过期，请重新搜索。")
         return
@@ -174,7 +175,7 @@ async def cb_page(callback: CallbackQuery):
     await callback.answer()
     _, res_key, page_s = callback.data.split(":", 2)
     page = int(page_s)
-    songs = cache.get(res_key)
+    songs = cache.get_list(res_key)
     if not songs:
         await callback.message.edit_text("搜索已过期，请重新搜索。")
         return
