@@ -145,6 +145,22 @@ async def resolve(song: Song) -> Song:
     return song
 
 
+# ---------------- 手动 Cookie 登录 ----------------
+
+def save_cookie(cookie: str) -> tuple[bool, str]:
+    """手动粘贴 Cookie 登录。校验 MUSIC_U 后保存凭证。"""
+    cookie = (cookie or "").strip()
+    if not cookie:
+        return False, "Cookie 为空，请复制浏览器中的完整 Cookie 值。"
+    if "MUSIC_U=" not in cookie:
+        return False, "Cookie 缺少 MUSIC_U（登录凭证），请确认已登录网易云音乐网页版。"
+    try:
+        database.save_credential("netease", cookie)
+    except Exception as e:
+        return False, f"凭证保存失败: {e}"
+    return True, "网易云 Cookie 登录成功！"
+
+
 # ---------------- 扫码登录 ----------------
 
 async def create_qr_login() -> dict:
